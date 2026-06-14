@@ -1,0 +1,14 @@
+[project]
+name = "orbit-wars-board-bc"
+version = "0.1.0"
+description = "Winner-perspective board-level behavioral cloning pipelines for Orbit Wars"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "orjson",
+  "pandas",
+  "pyarrow"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
