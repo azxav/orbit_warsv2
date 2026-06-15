@@ -1,6 +1,6 @@
-# Orbit Wars V2
+# orbit_warsv2
 
-Short project description: Orbit Wars V2 is a training workflow for building an Orbit Wars agent from replay data. The pipeline prepares replay-derived datasets, trains a behavioral cloning policy, and can optionally fine-tune that policy with PPO.
+Short project description: `orbit_warsv2` is a training workflow for building an Orbit Wars agent from replay data. The pipeline prepares replay-derived datasets, trains a behavioral cloning policy, and can optionally fine-tune that policy with PPO.
 
 ## 1. Environment setup
 
