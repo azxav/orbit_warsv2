@@ -75,10 +75,13 @@ def _build_replay_path(job: ReplayBuildJob) -> ReplayBuildResult:
         job.target_hit_only,
     )
     debug_counts = {key: len(replay_debug.get(key, [])) for key in DEBUG_KEYS}
+    result_id = job.result_id or path.stem
     if job.chunk_dir is not None:
+        if not samples:
+            return ReplayBuildResult(result_id, [], replay_debug if job.collect_debug else {}, debug_counts, None, 0)
         write_sample_chunk(job.chunk_dir, samples)
-        return ReplayBuildResult(job.result_id or path.stem, [], replay_debug if job.collect_debug else {}, debug_counts, job.chunk_dir, len(samples))
-    return ReplayBuildResult(job.result_id or path.stem, samples, replay_debug if job.collect_debug else {}, debug_counts, None, len(samples))
+        return ReplayBuildResult(result_id, [], replay_debug if job.collect_debug else {}, debug_counts, job.chunk_dir, len(samples))
+    return ReplayBuildResult(result_id, samples, replay_debug if job.collect_debug else {}, debug_counts, None, len(samples))
 
 
 def _iter_built_replays(jobs: list[ReplayBuildJob], workers: int):
