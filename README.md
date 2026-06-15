@@ -146,6 +146,8 @@ python -m orbit_board_bc_train.cli train \
   --weight-decay 1e-4 \
   --grad-clip 1.0 \
   --noop-stop-weight 0.35 \
+  --shuffle-block-size 65536 \
+  --log-interval 10 \
   --device auto \
   --resume ./bc_runs/board_bc_v1/last.pt
 ```
@@ -167,6 +169,13 @@ Training arguments:
 | `--weight-decay` | Weight decay. |
 | `--grad-clip` | Gradient clipping norm. |
 | `--noop-stop-weight` | Noop stop loss weight. |
+| `--num-workers` | DataLoader worker processes. Default `0` keeps RAM lowest; increase only after memory is stable. |
+| `--pin-memory` | Pin DataLoader batches before GPU transfer. Disabled by default to avoid extra host-memory pressure. |
+| `--persistent-workers` | Keep DataLoader workers alive between epochs when `--num-workers > 0`. |
+| `--prefetch-factor` | Prefetched batches per worker when `--num-workers > 0`. |
+| `--shuffle-block-size` | Bounded training shuffle block size. Default `65536` caps shuffle-index RAM; set `0` to use PyTorch full-dataset shuffle. |
+| `--log-file` | Training log path. Defaults to `<out-dir>/train.log`. |
+| `--log-interval` | Write batch progress every N batches. Default `10`; first and last batch of each epoch are always logged. |
 | `--device` | Training device, usually `auto`. |
 | `--resume` | Optional training checkpoint to resume from, usually `last.pt`. `--epochs` remains the target total epoch count, not the number of extra epochs. |
 

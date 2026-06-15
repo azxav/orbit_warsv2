@@ -56,6 +56,23 @@ def test_collate_model_and_loss_smoke():
     assert parts["source_loss"] >= 0.0
 
 
+def test_collate_omits_metadata_when_samples_do_not_have_it():
+    from orbit_board_bc_train.collate import collate_samples
+
+    samples = [
+        {
+            "planet_tokens": np.zeros((4, 16), dtype=np.float32),
+            "fleet_tokens": np.zeros((3, 10), dtype=np.float32),
+            "global_features": np.zeros((13,), dtype=np.float32),
+        }
+    ]
+
+    batch = collate_samples(samples)
+
+    assert "episode_id" not in batch
+    assert "sample_step" not in batch
+
+
 def _sample(i: int) -> TurnSample:
     rng = np.random.default_rng(i)
     max_planets = 4
@@ -106,6 +123,9 @@ def _train_args(dataset, out_dir, epochs, resume=None):
         grad_clip=1.0,
         noop_stop_weight=0.35,
         device="cpu",
+        shuffle_block_size=8,
+        log_interval=1,
+        log_file=None,
         resume=None if resume is None else str(resume),
     )
 
@@ -127,3 +147,86 @@ def test_train_resumes_from_last_completed_epoch(tmp_path):
     resumed = load_checkpoint(out_dir / "last.pt")
     assert resumed["train_state"]["epoch"] == 3
     assert resumed["train_state"]["start_epoch"] == 2
+
+
+def test_train_writes_progress_to_log_file(tmp_path, capsys):
+    from orbit_board_bc_train.train_loop import train
+
+    dataset = tmp_path / "dataset"
+    write_dataset(dataset, [_sample(i) for i in range(4)], [_sample(100)], {}, {})
+
+    out_dir = tmp_path / "run"
+    train(_train_args(dataset, out_dir, epochs=1))
+
+    log_text = (out_dir / "train.log").read_text(encoding="utf-8")
+    stdout = capsys.readouterr().out
+    assert "Starting training" in log_text
+    assert "Epoch 1/1 batch 1/2" in log_text
+    assert "Epoch 1/1 metrics" in log_text
+    assert "Epoch 1/1 batch 1/2" in stdout
+
+
+def test_dataset_memory_maps_arrays_by_default(tmp_path):
+    from orbit_board_bc_train.dataset import BoardBCDataset
+
+    dataset = tmp_path / "dataset"
+    write_dataset(dataset, [_sample(i) for i in range(2)], [_sample(100)], {}, {})
+
+    train_ds = BoardBCDataset(dataset, "train")
+
+    assert isinstance(train_ds.arrays["planet_tokens"], np.memmap)
+    assert isinstance(train_ds.arrays["fleet_tokens"], np.memmap)
+    assert isinstance(train_ds.arrays["source_candidate_mask"], np.memmap)
+
+
+def test_dataset_can_skip_metadata_index_for_training(tmp_path):
+    from orbit_board_bc_train.dataset import BoardBCDataset
+
+    dataset = tmp_path / "dataset"
+    write_dataset(dataset, [_sample(i) for i in range(2)], [_sample(100)], {}, {})
+
+    train_ds = BoardBCDataset(dataset, "train", include_metadata=False)
+    item = train_ds[0]
+
+    assert train_ds.index is None
+    assert "episode_id" not in item
+    assert "sample_step" not in item
+
+
+def test_dataset_can_load_only_requested_arrays(tmp_path):
+    from orbit_board_bc_train.dataset import BoardBCDataset
+
+    dataset = tmp_path / "dataset"
+    write_dataset(dataset, [_sample(i) for i in range(2)], [_sample(100)], {}, {})
+
+    train_ds = BoardBCDataset(
+        dataset,
+        "train",
+        include_metadata=False,
+        array_keys=["planet_tokens", "planet_masks", "action_valid_mask"],
+    )
+    item = train_ds[0]
+
+    assert set(train_ds.arrays) == {"planet_tokens", "planet_masks", "action_valid_mask"}
+    assert set(item) == {"planet_tokens", "planet_masks", "action_valid_mask"}
+
+
+def test_training_array_keys_exclude_unused_dataset_fields():
+    from orbit_board_bc_train.train_loop import TRAIN_ARRAY_KEYS
+
+    assert "action_angle_labels" not in TRAIN_ARRAY_KEYS
+    assert "turn_type" not in TRAIN_ARRAY_KEYS
+    assert "phase_id" not in TRAIN_ARRAY_KEYS
+    assert "winner_id" not in TRAIN_ARRAY_KEYS
+    assert "planet_tokens" in TRAIN_ARRAY_KEYS
+    assert "action_loss_weights" in TRAIN_ARRAY_KEYS
+
+
+def test_block_shuffle_sampler_visits_each_index_once():
+    from orbit_board_bc_train.train_loop import BlockShuffleSampler
+
+    sampler = BlockShuffleSampler(range(17), block_size=5)
+    indices = list(sampler)
+
+    assert len(indices) == 17
+    assert sorted(indices) == list(range(17))

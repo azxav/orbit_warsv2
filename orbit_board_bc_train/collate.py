@@ -37,7 +37,8 @@ def collate_samples(samples: list[dict]) -> dict[str, torch.Tensor | list]:
             batch[key] = torch.as_tensor(arr, dtype=torch.long)
         else:
             batch[key] = torch.as_tensor(arr)
-    batch["episode_id"] = [s.get("episode_id") for s in samples]
-    batch["sample_step"] = torch.as_tensor([s.get("sample_step", -1) for s in samples], dtype=torch.long)
+    if "episode_id" in samples[0]:
+        batch["episode_id"] = [s["episode_id"] for s in samples]
+    if "sample_step" in samples[0]:
+        batch["sample_step"] = torch.as_tensor([s["sample_step"] for s in samples], dtype=torch.long)
     return batch
-

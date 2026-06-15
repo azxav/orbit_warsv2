@@ -20,6 +20,10 @@ def select_players(replay: Replay, player_filter: str) -> list[int]:
 
 def split_episode_ids(episode_ids: Sequence[str], valid_ratio: float, seed: int = 13) -> tuple[set[str], set[str]]:
     ids = list(dict.fromkeys(episode_ids))
+    if valid_ratio <= 0:
+        return set(ids), set()
+    if valid_ratio >= 1:
+        return set(), set(ids)
     rng = random.Random(seed)
     rng.shuffle(ids)
     if len(ids) <= 1:
@@ -36,4 +40,3 @@ def phase_id(step: int) -> int:
     if step <= 350:
         return 1
     return 2
-
