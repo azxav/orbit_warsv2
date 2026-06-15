@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+import shutil
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 import json
@@ -9,11 +11,18 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from .replay_loader import iter_replay_paths, load_replay
 from .sample_builder import build_samples_from_replay
 from .split import split_episode_ids
-from .tensor_writer import StreamingDatasetWriter, finalize_dataset_from_chunks, write_sample_chunk
+from .tensor_writer import (
+    StreamingDatasetWriter,
+    finalize_dataset_from_chunks,
+    finalize_incremental_dataset_from_chunks,
+    validate_existing_dataset_compatible,
+    write_sample_chunk,
+)
 from .validator import validate_dataset
 
 
@@ -39,6 +48,7 @@ class ReplayBuildJob:
     collect_debug: bool
     split: str = "train"
     chunk_dir: str | None = None
+    result_id: str | None = None
 
 
 @dataclass
@@ -67,8 +77,8 @@ def _build_replay_path(job: ReplayBuildJob) -> ReplayBuildResult:
     debug_counts = {key: len(replay_debug.get(key, [])) for key in DEBUG_KEYS}
     if job.chunk_dir is not None:
         write_sample_chunk(job.chunk_dir, samples)
-        return ReplayBuildResult(path.stem, [], replay_debug if job.collect_debug else {}, debug_counts, job.chunk_dir, len(samples))
-    return ReplayBuildResult(path.stem, samples, replay_debug if job.collect_debug else {}, debug_counts, None, len(samples))
+        return ReplayBuildResult(job.result_id or path.stem, [], replay_debug if job.collect_debug else {}, debug_counts, job.chunk_dir, len(samples))
+    return ReplayBuildResult(job.result_id or path.stem, samples, replay_debug if job.collect_debug else {}, debug_counts, None, len(samples))
 
 
 def _iter_built_replays(jobs: list[ReplayBuildJob], workers: int):
@@ -95,17 +105,91 @@ def _default_workers() -> int:
     return max(1, min(cpu_count - 1, 8))
 
 
+def _is_existing_dataset(path: str | Path) -> bool:
+    root = Path(path)
+    return (root / "dataset_info.json").exists() and (root / "train" / "sample_index.parquet").exists()
+
+
+def _existing_episode_splits(dataset: str | Path) -> tuple[set[str], set[str]]:
+    root = Path(dataset)
+    train = set(pd.read_parquet(root / "train" / "sample_index.parquet")["episode_id"].astype(str))
+    valid = set(pd.read_parquet(root / "valid" / "sample_index.parquet")["episode_id"].astype(str))
+    return train, valid
+
+
+def _append_valid_episode(episode_id: str, valid_ratio: float, seed: int) -> bool:
+    if valid_ratio <= 0:
+        return False
+    if valid_ratio >= 1:
+        return True
+    digest = hashlib.blake2b(f"{seed}:{episode_id}".encode("utf-8"), digest_size=8).digest()
+    value = int.from_bytes(digest, "big") / float(1 << 64)
+    return value < valid_ratio
+
+
+def _atomic_replace_dir(temp_dir: Path, target_dir: Path) -> None:
+    backup_dir = target_dir.with_name(f"{target_dir.name}.__append_backup__")
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    target_dir.rename(backup_dir)
+    try:
+        temp_dir.rename(target_dir)
+    except Exception:
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        backup_dir.rename(target_dir)
+        raise
+    shutil.rmtree(backup_dir)
+
+
 def _cmd_build(args: argparse.Namespace) -> None:
     replay_paths = iter_replay_paths(args.replay_dir)
     if not replay_paths:
         raise SystemExit(f"No replay JSON files found in {args.replay_dir}")
-    train_ids, valid_ids = split_episode_ids([path.stem for path in replay_paths], args.valid_ratio, args.seed)
+    append_existing = bool(args.append and _is_existing_dataset(args.out_dir))
+    replay_episode_ids: dict[Path, str] = {}
+    train_ids: set[str]
+    valid_ids: set[str]
+    target_out_dir = Path(args.out_dir)
+    build_out_dir = target_out_dir
+    if append_existing:
+        try:
+            validate_existing_dataset_compatible(args.out_dir, args.max_planets, args.max_fleets, args.max_actions_per_turn)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        existing_train_ids, existing_valid_ids = _existing_episode_splits(args.out_dir)
+        existing_ids = existing_train_ids | existing_valid_ids
+        new_paths: list[Path] = []
+        for path in replay_paths:
+            episode_id = load_replay(path).episode_id
+            replay_episode_ids[path] = episode_id
+            if episode_id not in existing_ids:
+                new_paths.append(path)
+        if not new_paths:
+            print("No new replay episodes found; dataset unchanged.")
+            return
+        replay_paths = new_paths
+        train_ids = set()
+        valid_ids = set()
+        for path in replay_paths:
+            episode_id = replay_episode_ids[path]
+            if _append_valid_episode(episode_id, args.valid_ratio, args.seed):
+                valid_ids.add(episode_id)
+            else:
+                train_ids.add(episode_id)
+        build_out_dir = target_out_dir.with_name(f"{target_out_dir.name}.__append_tmp__")
+        if build_out_dir.exists():
+            shutil.rmtree(build_out_dir)
+    else:
+        train_ids, valid_ids = split_episode_ids([path.stem for path in replay_paths], args.valid_ratio, args.seed)
     workers = max(1, min(int(args.workers), len(replay_paths)))
     use_worker_shards = args.worker_output == "shard" and workers > 1
+    if append_existing:
+        use_worker_shards = True
     writer = None
     if not use_worker_shards:
         writer = StreamingDatasetWriter(
-            args.out_dir,
+            build_out_dir,
             max_planets=args.max_planets,
             max_fleets=args.max_fleets,
             max_actions=args.max_actions_per_turn,
@@ -127,10 +211,11 @@ def _cmd_build(args: argparse.Namespace) -> None:
             keep_noop=args.keep_noop,
             target_hit_only=args.target_hit_only,
             collect_debug=args.write_debug,
-            split="valid" if path.stem in valid_ids else "train",
-            chunk_dir=str(Path(args.out_dir) / "_worker_chunks" / ("valid" if path.stem in valid_ids else "train") / path.stem)
+            split="valid" if (replay_episode_ids.get(path, path.stem)) in valid_ids else "train",
+            chunk_dir=str(build_out_dir / "_worker_chunks" / ("valid" if (replay_episode_ids.get(path, path.stem)) in valid_ids else "train") / path.stem)
             if use_worker_shards
             else None,
+            result_id=replay_episode_ids.get(path),
         )
         for path in replay_paths
     ]
@@ -152,9 +237,28 @@ def _cmd_build(args: argparse.Namespace) -> None:
     metadata_args = {key: value for key, value in vars(args).items() if key != "func"}
     metadata_args["workers"] = workers
     metadata_args["worker_output"] = "shard" if use_worker_shards else "parent"
-    if use_worker_shards:
+    if append_existing:
+        try:
+            finalize_incremental_dataset_from_chunks(
+                target_out_dir,
+                build_out_dir,
+                split_chunks,
+                max_planets=args.max_planets,
+                max_fleets=args.max_fleets,
+                max_actions=args.max_actions_per_turn,
+                debug=debug,
+                args=metadata_args,
+                quality_counts=quality_counts,
+                compress_masks=args.compress_masks,
+            )
+            validate_dataset(build_out_dir)
+            _atomic_replace_dir(build_out_dir, target_out_dir)
+        except Exception:
+            shutil.rmtree(build_out_dir, ignore_errors=True)
+            raise
+    elif use_worker_shards:
         finalize_dataset_from_chunks(
-            args.out_dir,
+            build_out_dir,
             split_chunks,
             max_planets=args.max_planets,
             max_fleets=args.max_fleets,
@@ -207,6 +311,7 @@ def main(argv: list[str] | None = None) -> None:
     build.add_argument("--no-compress-masks", dest="compress_masks", action="store_false")
     build.add_argument("--workers", type=int, default=_default_workers())
     build.add_argument("--worker-output", choices=["parent", "shard"], default="shard")
+    build.add_argument("--append", action="store_true", default=False)
     build.set_defaults(func=_cmd_build)
 
     validate = sub.add_parser("validate")

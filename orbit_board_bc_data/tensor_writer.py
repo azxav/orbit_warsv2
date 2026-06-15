@@ -62,11 +62,16 @@ def write_split(out_dir: Path, samples: list[TurnSample]) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     for field in ARRAY_FIELDS:
         np.save(out_dir / f"{field}.npy", _stack(samples, field))
+    masks = {
+        "action_valid_mask": np.stack([s.action_valid_mask for s in samples]),
+        "source_candidate_mask": np.stack([s.source_candidate_mask for s in samples]),
+        "target_candidate_mask": np.stack([s.target_candidate_mask for s in samples]),
+    }
+    for field, arr in masks.items():
+        np.save(out_dir / f"{field}.npy", arr)
     np.savez_compressed(
         out_dir / "action_masks.npz",
-        action_valid_mask=np.stack([s.action_valid_mask for s in samples]),
-        source_candidate_mask=np.stack([s.source_candidate_mask for s in samples]),
-        target_candidate_mask=np.stack([s.target_candidate_mask for s in samples]),
+        **masks,
     )
     index = pd.DataFrame(
         {
@@ -145,6 +150,47 @@ def _write_empty_index(path: Path) -> None:
     ).to_parquet(path, index=False)
 
 
+def _load_mask_array(split_dir: Path, field: str, mmap_mode: str | None = "r") -> np.ndarray:
+    sidecar = split_dir / f"{field}.npy"
+    if sidecar.exists():
+        return np.load(sidecar, mmap_mode=mmap_mode, allow_pickle=False)
+    masks = np.load(split_dir / "action_masks.npz", allow_pickle=False)
+    return masks[field]
+
+
+def _existing_field_array(split_dir: Path, field: str) -> np.ndarray:
+    if field in MASK_FIELDS:
+        return _load_mask_array(split_dir, field)
+    return np.load(split_dir / f"{field}.npy", mmap_mode="r", allow_pickle=False)
+
+
+def validate_existing_dataset_compatible(
+    existing_dir: str | Path,
+    max_planets: int,
+    max_fleets: int,
+    max_actions: int,
+) -> None:
+    root = Path(existing_dir)
+    schema_path = root / "feature_schema.json"
+    if not schema_path.exists():
+        raise ValueError(f"Existing dataset missing {schema_path}")
+    expected_schema = json.loads(json.dumps(asdict(DEFAULT_FEATURE_SCHEMA)))
+    existing_schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    if existing_schema != expected_schema:
+        raise ValueError("Existing dataset feature schema does not match current schema")
+    for split in ["train", "valid"]:
+        split_dir = root / split
+        if not split_dir.exists():
+            raise ValueError(f"Existing dataset missing split: {split}")
+        for field in ARRAY_FIELDS + MASK_FIELDS:
+            arr = _existing_field_array(split_dir, field)
+            expected_tail = _empty_shape(field, max_planets, max_fleets, max_actions)[1:]
+            if tuple(arr.shape[1:]) != expected_tail:
+                raise ValueError(
+                    f"Existing {split}/{field} shape {tuple(arr.shape)} incompatible with expected tail {expected_tail}"
+                )
+
+
 def _merge_chunk_field(chunks: list[Path], field: str, out_path: Path, sample_count: int, empty_shape: tuple[int, ...]) -> None:
     if not chunks:
         np.save(out_path, np.zeros(empty_shape, dtype=_dtype_for_field(field)))
@@ -158,6 +204,63 @@ def _merge_chunk_field(chunks: list[Path], field: str, out_path: Path, sample_co
         out[offset:next_offset] = arr
         offset = next_offset
     out.flush()
+
+
+def _merge_existing_and_chunk_field(
+    existing_split_dir: Path,
+    chunks: list[Path],
+    field: str,
+    out_path: Path,
+    empty_shape: tuple[int, ...],
+) -> int:
+    existing = _existing_field_array(existing_split_dir, field)
+    sample_count = int(existing.shape[0])
+    for chunk in chunks:
+        arr = np.load(chunk / f"{field}.npy", mmap_mode="r", allow_pickle=False)
+        sample_count += int(arr.shape[0])
+    if sample_count == 0:
+        np.save(out_path, np.zeros(empty_shape, dtype=_dtype_for_field(field)))
+        return 0
+    dtype = existing.dtype if existing.shape[0] else _dtype_for_field(field)
+    if existing.shape[0] == 0 and chunks:
+        dtype = np.load(chunks[0] / f"{field}.npy", mmap_mode="r", allow_pickle=False).dtype
+    shape = (sample_count,) + empty_shape[1:]
+    out = np.lib.format.open_memmap(out_path, mode="w+", dtype=dtype, shape=shape)
+    offset = 0
+    if existing.shape[0]:
+        next_offset = offset + int(existing.shape[0])
+        out[offset:next_offset] = existing
+        offset = next_offset
+    for chunk in chunks:
+        arr = np.load(chunk / f"{field}.npy", mmap_mode="r", allow_pickle=False)
+        next_offset = offset + int(arr.shape[0])
+        out[offset:next_offset] = arr
+        offset = next_offset
+    out.flush()
+    return sample_count
+
+
+def _write_merged_index(existing_split_dir: Path, chunks: list[Path], index_path: Path) -> None:
+    writer: pq.ParquetWriter | None = None
+    schema: pa.Schema | None = None
+    wrote = False
+    for source in [existing_split_dir, *chunks]:
+        path = source / "sample_index.parquet"
+        parquet = pq.ParquetFile(path)
+        for batch in parquet.iter_batches():
+            table = pa.Table.from_batches([batch])
+            if schema is None:
+                schema = table.schema.remove_metadata()
+            if not table.schema.remove_metadata().equals(schema, check_metadata=False):
+                table = table.cast(schema)
+            if writer is None:
+                writer = pq.ParquetWriter(index_path, schema)
+            writer.write_table(table)
+            wrote = True
+    if writer is not None:
+        writer.close()
+    if not wrote:
+        _write_empty_index(index_path)
 
 
 def _finalize_split_from_chunks(
@@ -183,7 +286,7 @@ def _finalize_split_from_chunks(
 
     mask_paths: dict[str, Path] = {}
     for field in MASK_FIELDS:
-        path = split_dir / f"_{field}.npy"
+        path = split_dir / f"{field}.npy"
         _merge_chunk_field(chunks, field, path, sample_count, _empty_shape(field, max_planets, max_fleets, max_actions))
         mask_paths[field] = path
     _savez(
@@ -193,9 +296,6 @@ def _finalize_split_from_chunks(
         source_candidate_mask=np.load(mask_paths["source_candidate_mask"], mmap_mode="r"),
         target_candidate_mask=np.load(mask_paths["target_candidate_mask"], mmap_mode="r"),
     )
-    for path in mask_paths.values():
-        path.unlink(missing_ok=True)
-
     index_writer: pq.ParquetWriter | None = None
     index_path = split_dir / "sample_index.parquet"
     for chunk in chunks:
@@ -208,6 +308,113 @@ def _finalize_split_from_chunks(
     else:
         _write_empty_index(index_path)
     return {"samples": sample_count, "action_turns": action_turns, "noop_turns": noop_turns}
+
+
+def _finalize_incremental_split_from_chunks(
+    existing_split_dir: Path,
+    split_dir: Path,
+    chunks: list[Path],
+    max_planets: int,
+    max_fleets: int,
+    max_actions: int,
+    compress_masks: bool,
+) -> dict[str, int]:
+    split_dir.mkdir(parents=True, exist_ok=True)
+    turn_type = _existing_field_array(existing_split_dir, "turn_type")
+    sample_count = int(turn_type.shape[0])
+    action_turns = int((turn_type == 1).sum())
+    noop_turns = int((turn_type == 0).sum())
+    for chunk in chunks:
+        chunk_turn_type = np.load(chunk / "turn_type.npy", mmap_mode="r", allow_pickle=False)
+        sample_count += int(chunk_turn_type.shape[0])
+        action_turns += int((chunk_turn_type == 1).sum())
+        noop_turns += int((chunk_turn_type == 0).sum())
+
+    for field in ARRAY_FIELDS:
+        _merge_existing_and_chunk_field(
+            existing_split_dir,
+            chunks,
+            field,
+            split_dir / f"{field}.npy",
+            _empty_shape(field, max_planets, max_fleets, max_actions),
+        )
+
+    mask_paths: dict[str, Path] = {}
+    for field in MASK_FIELDS:
+        path = split_dir / f"{field}.npy"
+        _merge_existing_and_chunk_field(
+            existing_split_dir,
+            chunks,
+            field,
+            path,
+            _empty_shape(field, max_planets, max_fleets, max_actions),
+        )
+        mask_paths[field] = path
+    _savez(
+        split_dir / "action_masks.npz",
+        compress_masks,
+        action_valid_mask=np.load(mask_paths["action_valid_mask"], mmap_mode="r", allow_pickle=False),
+        source_candidate_mask=np.load(mask_paths["source_candidate_mask"], mmap_mode="r", allow_pickle=False),
+        target_candidate_mask=np.load(mask_paths["target_candidate_mask"], mmap_mode="r", allow_pickle=False),
+    )
+    _write_merged_index(existing_split_dir, chunks, split_dir / "sample_index.parquet")
+    return {"samples": sample_count, "action_turns": action_turns, "noop_turns": noop_turns}
+
+
+def finalize_incremental_dataset_from_chunks(
+    existing_dir: str | Path,
+    out_dir: str | Path,
+    split_chunks: dict[str, list[str | Path]],
+    max_planets: int,
+    max_fleets: int,
+    max_actions: int,
+    debug: dict[str, list[dict[str, Any]]],
+    args: dict[str, Any],
+    quality_counts: dict[str, int] | None = None,
+    compress_masks: bool = True,
+) -> None:
+    existing = Path(existing_dir)
+    root = Path(out_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    validate_existing_dataset_compatible(existing, max_planets, max_fleets, max_actions)
+    train_stats = _finalize_incremental_split_from_chunks(
+        existing / "train",
+        root / "train",
+        [Path(path) for path in split_chunks.get("train", [])],
+        max_planets,
+        max_fleets,
+        max_actions,
+        compress_masks,
+    )
+    valid_stats = _finalize_incremental_split_from_chunks(
+        existing / "valid",
+        root / "valid",
+        [Path(path) for path in split_chunks.get("valid", [])],
+        max_planets,
+        max_fleets,
+        max_actions,
+        compress_masks,
+    )
+    (root / "debug").mkdir(exist_ok=True)
+    for name, rows in debug.items():
+        pd.DataFrame(rows).to_csv(root / "debug" / f"{name}.csv", index=False)
+    old_info = json.loads((existing / "dataset_info.json").read_text(encoding="utf-8"))
+    old_stats = old_info.get("stats", {})
+    counts = quality_counts or {key: len(rows) for key, rows in debug.items()}
+    stats = {
+        "train_samples": train_stats["samples"],
+        "valid_samples": valid_stats["samples"],
+        "action_turns": train_stats["action_turns"] + valid_stats["action_turns"],
+        "noop_turns": train_stats["noop_turns"] + valid_stats["noop_turns"],
+        "unmatched_actions": int(old_stats.get("unmatched_actions", 0)) + int(counts.get("unmatched_actions", 0)),
+        "ambiguous_matches": int(old_stats.get("ambiguous_matches", 0)) + int(counts.get("ambiguous_matches", 0)),
+        "unknown_target_labels": int(old_stats.get("unknown_target_labels", 0)) + int(counts.get("unknown_target_labels", 0)),
+        "matched_actions": int(old_stats.get("matched_actions", 0)) + int(counts.get("extracted_action_target_labels", 0)),
+    }
+    (root / "dataset_info.json").write_text(json.dumps({"args": args, "stats": stats}, indent=2), encoding="utf-8")
+    (root / "feature_schema.json").write_text(json.dumps(asdict(DEFAULT_FEATURE_SCHEMA), indent=2), encoding="utf-8")
+    (root / "label_stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
+    shutil.rmtree(root / "_worker_chunks", ignore_errors=True)
 
 
 def finalize_dataset_from_chunks(
@@ -333,7 +540,7 @@ class _SplitChunkWriter:
 
         mask_paths: dict[str, Path] = {}
         for field in MASK_FIELDS:
-            path = self.split_dir / f"_{field}.npy"
+            path = self.split_dir / f"{field}.npy"
             self._merge_field(field, path, self._empty_shape(field), bool)
             mask_paths[field] = path
         _savez(
@@ -343,9 +550,6 @@ class _SplitChunkWriter:
             source_candidate_mask=np.load(mask_paths["source_candidate_mask"], mmap_mode="r"),
             target_candidate_mask=np.load(mask_paths["target_candidate_mask"], mmap_mode="r"),
         )
-        for path in mask_paths.values():
-            path.unlink(missing_ok=True)
-
     def _write_empty_index(self) -> None:
         pd.DataFrame(
             {

@@ -4,6 +4,7 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 def _planet(pid, owner, x, y, ships=20, radius=2.0, production=3):
@@ -12,6 +13,48 @@ def _planet(pid, owner, x, y, ships=20, radius=2.0, production=3):
 
 def _fleet(fid, owner, x, y, angle, source, ships):
     return [fid, owner, x, y, angle, source, ships]
+
+
+def _write_noop_replay(path: Path, episode_id: str, owner: int = 0) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "id": episode_id,
+                "configuration": {"episodeSteps": 2, "shipSpeed": 6.0},
+                "rewards": [1, -1, -1, -1],
+                "statuses": ["DONE", "DONE", "DONE", "DONE"],
+                "steps": [
+                    [
+                        {
+                            "observation": {
+                                "player": player_id,
+                                "step": 0,
+                                "planets": [_planet(1, owner, 10.0, 10.0)],
+                                "fleets": [],
+                            },
+                            "action": [],
+                            "status": "ACTIVE",
+                        }
+                        for player_id in range(4)
+                    ],
+                    [
+                        {
+                            "observation": {
+                                "player": player_id,
+                                "step": 1,
+                                "planets": [_planet(1, owner, 10.0, 10.0)],
+                                "fleets": [],
+                            },
+                            "action": [],
+                            "status": "ACTIVE",
+                        }
+                        for player_id in range(4)
+                    ],
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_winner_filter_and_replay_loader(tmp_path):
@@ -127,6 +170,95 @@ def test_fleet_matching_uses_created_fleet_from_next_row():
     assert match is not None
     assert match.fleet_id == 9
     assert match.status == "matched"
+
+
+def test_segment_hits_circle_rejects_far_circle_before_distance_math(monkeypatch):
+    import orbit_board_bc_data.geometry as geometry
+
+    def fail_distance(*_args):
+        raise AssertionError("far circle should be rejected by bounding box")
+
+    monkeypatch.setattr(geometry, "point_segment_distance", fail_distance)
+
+    assert geometry.segment_hits_circle(0.0, 0.0, 1.0, 0.0, 100.0, 100.0, 2.0) is False
+
+
+def test_fleet_speed_reuses_log_1000_constant(monkeypatch):
+    import orbit_board_bc_data.geometry as geometry
+
+    original_log = geometry.math.log
+    calls = []
+
+    def counting_log(value):
+        calls.append(value)
+        return original_log(value)
+
+    monkeypatch.setattr(geometry.math, "log", counting_log)
+
+    assert geometry.fleet_speed(64.0, 6.0) > 1.0
+    assert calls == [64.0]
+
+
+def test_feature_builder_reuses_orbital_phase_trig(monkeypatch):
+    import orbit_board_bc_data.feature_builder as feature_builder
+
+    original_sin = feature_builder.math.sin
+    original_cos = feature_builder.math.cos
+    sin_calls = []
+    cos_calls = []
+
+    def counting_sin(value):
+        sin_calls.append(value)
+        return original_sin(value)
+
+    def counting_cos(value):
+        cos_calls.append(value)
+        return original_cos(value)
+
+    monkeypatch.setattr(feature_builder.math, "sin", counting_sin)
+    monkeypatch.setattr(feature_builder.math, "cos", counting_cos)
+    obs = {
+        "step": 0,
+        "angular_velocity": 0.03,
+        "comet_planet_ids": [],
+        "planets": [_planet(1, 0, 10.0, 20.0)],
+        "fleets": [],
+        "player": 0,
+    }
+
+    features = feature_builder.build_board_features(obs, player_id=0, max_planets=4, max_fleets=2)
+
+    assert features.planet_mask.tolist() == [True, False, False, False]
+    assert len(sin_calls) == 1
+    assert len(cos_calls) == 1
+
+
+def test_feature_builder_inlines_relative_owner_hot_path(monkeypatch):
+    import orbit_board_bc_data.feature_builder as feature_builder
+    import orbit_board_bc_data.perspective as perspective
+
+    def fail_planet_relative_owner(*_args):
+        raise AssertionError("feature hot path should inline planet perspective")
+
+    def fail_fleet_relative_owner(*_args):
+        raise AssertionError("feature hot path should inline fleet perspective")
+
+    monkeypatch.setattr(perspective, "planet_relative_owner", fail_planet_relative_owner)
+    monkeypatch.setattr(perspective, "fleet_relative_owner", fail_fleet_relative_owner)
+    obs = {
+        "step": 0,
+        "angular_velocity": 0.03,
+        "comet_planet_ids": [],
+        "planets": [_planet(1, 0, 10.0, 20.0), _planet(2, -1, 30.0, 40.0)],
+        "fleets": [_fleet(3, 0, 11.0, 21.0, 0.0, 1, 8)],
+        "player": 0,
+    }
+
+    features = feature_builder.build_board_features(obs, player_id=0, max_planets=4, max_fleets=3)
+
+    assert features.planet_tokens[0, 7] == 1.0
+    assert features.planet_tokens[1, 9] == 1.0
+    assert features.fleet_tokens[0, 9] == 1.0
 
 
 def test_target_extraction_detects_segment_planet_hit():
@@ -412,6 +544,62 @@ def test_streaming_writer_can_write_uncompressed_masks_for_fast_builds(tmp_path)
     assert dataset[0]["action_valid_mask"].shape == (3,)
 
 
+def test_streaming_writer_writes_mask_sidecars_and_dataset_reads_them(tmp_path):
+    from orbit_board_bc_data.sample_builder import build_turn_sample
+    from orbit_board_bc_data.tensor_writer import StreamingDatasetWriter
+    from orbit_board_bc_train.dataset import BoardBCDataset
+
+    out_dir = tmp_path / "dataset"
+    writer = StreamingDatasetWriter(out_dir, max_planets=4, max_fleets=2, max_actions=3, chunk_size=1)
+    obs = {
+        "step": 0,
+        "angular_velocity": 0.0,
+        "comet_planet_ids": [],
+        "planets": [_planet(1, 0, 10.0, 10.0, ships=20)],
+        "fleets": [],
+        "player": 0,
+    }
+    sample = build_turn_sample(obs, 0, "ep", 0, [], 4, 2, 3, 0.35)
+    assert sample is not None
+    writer.add_samples("train", [sample])
+    writer.finalize(debug={}, args={"seed": 13})
+    (out_dir / "train" / "action_masks.npz").unlink()
+
+    assert (out_dir / "train" / "action_valid_mask.npy").exists()
+    assert (out_dir / "train" / "source_candidate_mask.npy").exists()
+    assert (out_dir / "train" / "target_candidate_mask.npy").exists()
+    dataset = BoardBCDataset(out_dir, "train")
+    assert len(dataset) == 1
+    assert dataset[0]["source_candidate_mask"].shape == (3, 5)
+
+
+def test_dataset_reader_keeps_npz_mask_compatibility(tmp_path):
+    from orbit_board_bc_data.sample_builder import build_turn_sample
+    from orbit_board_bc_data.tensor_writer import StreamingDatasetWriter
+    from orbit_board_bc_train.dataset import BoardBCDataset
+
+    out_dir = tmp_path / "dataset"
+    writer = StreamingDatasetWriter(out_dir, max_planets=4, max_fleets=2, max_actions=3, chunk_size=1)
+    obs = {
+        "step": 0,
+        "angular_velocity": 0.0,
+        "comet_planet_ids": [],
+        "planets": [_planet(1, 0, 10.0, 10.0, ships=20)],
+        "fleets": [],
+        "player": 0,
+    }
+    sample = build_turn_sample(obs, 0, "ep", 0, [], 4, 2, 3, 0.35)
+    assert sample is not None
+    writer.add_samples("train", [sample])
+    writer.finalize(debug={}, args={"seed": 13})
+    for name in ["action_valid_mask.npy", "source_candidate_mask.npy", "target_candidate_mask.npy"]:
+        (out_dir / "train" / name).unlink()
+
+    dataset = BoardBCDataset(out_dir, "train")
+    assert len(dataset) == 1
+    assert dataset[0]["target_candidate_mask"].shape == (3, 4)
+
+
 def test_cli_build_supports_parallel_replay_workers(tmp_path):
     from orbit_board_bc_data.cli import main
     from orbit_board_bc_data.validator import validate_dataset
@@ -654,3 +842,169 @@ def test_cli_build_tracks_quality_counts_without_debug_csvs(tmp_path):
     assert info["stats"]["matched_actions"] == 1
     assert info["stats"]["unmatched_actions"] == 0
     assert info["stats"]["ambiguous_matches"] == 0
+
+
+def test_cli_build_append_adds_only_new_replays_and_keeps_existing_splits(tmp_path):
+    import pandas as pd
+
+    from orbit_board_bc_data.cli import main
+    from orbit_board_bc_data.validator import validate_dataset
+
+    initial_replays = tmp_path / "initial"
+    initial_replays.mkdir()
+    _write_noop_replay(initial_replays / "initial-train.json", "initial-train")
+    _write_noop_replay(initial_replays / "initial-valid.json", "initial-valid")
+    out_dir = tmp_path / "dataset"
+    main(
+        [
+            "build",
+            "--replay-dir",
+            str(initial_replays),
+            "--out-dir",
+            str(out_dir),
+            "--keep-noop",
+            "--valid-ratio",
+            "0.5",
+            "--max-planets",
+            "4",
+            "--max-fleets",
+            "2",
+            "--max-actions-per-turn",
+            "3",
+            "--workers",
+            "1",
+        ]
+    )
+    old_train = set(pd.read_parquet(out_dir / "train" / "sample_index.parquet")["episode_id"])
+    old_valid = set(pd.read_parquet(out_dir / "valid" / "sample_index.parquet")["episode_id"])
+    old_count = validate_dataset(out_dir)["splits"]["train"]["samples"] + validate_dataset(out_dir)["splits"]["valid"]["samples"]
+
+    new_replays = tmp_path / "new"
+    new_replays.mkdir()
+    _write_noop_replay(new_replays / "duplicate.json", next(iter(old_train | old_valid)))
+    _write_noop_replay(new_replays / "new-a.json", "new-a")
+    _write_noop_replay(new_replays / "new-b.json", "new-b")
+    main(
+        [
+            "build",
+            "--append",
+            "--replay-dir",
+            str(new_replays),
+            "--out-dir",
+            str(out_dir),
+            "--keep-noop",
+            "--valid-ratio",
+            "0.5",
+            "--max-planets",
+            "4",
+            "--max-fleets",
+            "2",
+            "--max-actions-per-turn",
+            "3",
+            "--workers",
+            "1",
+        ]
+    )
+
+    report = validate_dataset(out_dir)
+    new_train = set(pd.read_parquet(out_dir / "train" / "sample_index.parquet")["episode_id"])
+    new_valid = set(pd.read_parquet(out_dir / "valid" / "sample_index.parquet")["episode_id"])
+    new_count = report["splits"]["train"]["samples"] + report["splits"]["valid"]["samples"]
+    assert old_train <= new_train
+    assert old_valid <= new_valid
+    assert "new-a" in new_train | new_valid
+    assert "new-b" in new_train | new_valid
+    assert new_count == old_count + 2
+
+
+def test_cli_build_append_no_new_replays_leaves_dataset_untouched(tmp_path):
+    from orbit_board_bc_data.cli import main
+
+    replay_dir = tmp_path / "replays"
+    replay_dir.mkdir()
+    _write_noop_replay(replay_dir / "episode.json", "episode")
+    out_dir = tmp_path / "dataset"
+    args = [
+        "build",
+        "--replay-dir",
+        str(replay_dir),
+        "--out-dir",
+        str(out_dir),
+        "--keep-noop",
+        "--valid-ratio",
+        "0.0",
+        "--max-planets",
+        "4",
+        "--max-fleets",
+        "2",
+        "--max-actions-per-turn",
+        "3",
+        "--workers",
+        "1",
+    ]
+    main(args)
+    before = json.loads((out_dir / "dataset_info.json").read_text(encoding="utf-8"))
+
+    main(["build", "--append", *args[1:]])
+
+    after = json.loads((out_dir / "dataset_info.json").read_text(encoding="utf-8"))
+    assert after == before
+
+
+def test_cli_build_append_rejects_shape_mismatch_without_replacing_dataset(tmp_path):
+    from orbit_board_bc_data.cli import main
+
+    replay_dir = tmp_path / "replays"
+    replay_dir.mkdir()
+    _write_noop_replay(replay_dir / "episode.json", "episode")
+    out_dir = tmp_path / "dataset"
+    main(
+        [
+            "build",
+            "--replay-dir",
+            str(replay_dir),
+            "--out-dir",
+            str(out_dir),
+            "--keep-noop",
+            "--valid-ratio",
+            "0.0",
+            "--max-planets",
+            "4",
+            "--max-fleets",
+            "2",
+            "--max-actions-per-turn",
+            "3",
+            "--workers",
+            "1",
+        ]
+    )
+    before = json.loads((out_dir / "dataset_info.json").read_text(encoding="utf-8"))
+    new_replays = tmp_path / "new-replays"
+    new_replays.mkdir()
+    _write_noop_replay(new_replays / "new-episode.json", "new-episode")
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "build",
+                "--append",
+                "--replay-dir",
+                str(new_replays),
+                "--out-dir",
+                str(out_dir),
+                "--keep-noop",
+                "--valid-ratio",
+                "0.0",
+                "--max-planets",
+                "5",
+                "--max-fleets",
+                "2",
+                "--max-actions-per-turn",
+                "3",
+                "--workers",
+                "1",
+            ]
+        )
+
+    after = json.loads((out_dir / "dataset_info.json").read_text(encoding="utf-8"))
+    assert after == before

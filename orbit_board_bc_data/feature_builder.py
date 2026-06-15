@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import numpy as np
 
 from .geometry import CENTER_X, CENTER_Y, ROTATION_RADIUS_LIMIT, fleet_speed
-from .perspective import fleet_relative_owner, planet_relative_owner
 from .schema import DEFAULT_FEATURE_SCHEMA
 
 LOG_1001 = math.log(1001.0)
@@ -45,6 +44,20 @@ def _next_comet_spawn_delta(step: int) -> float:
     return (future[0] - step) / 500.0
 
 
+def _planet_owner_values(owner: int, player_id: int) -> tuple[int, int, int, float]:
+    if owner == player_id:
+        return 1, 0, 0, 1.0
+    if owner == -1:
+        return 0, 0, 1, 0.0
+    return 0, 1, 0, -1.0
+
+
+def _fleet_owner_values(owner: int, player_id: int) -> tuple[int, int, float]:
+    if owner == player_id:
+        return 1, 0, 1.0
+    return 0, 1, -1.0
+
+
 def build_board_features(obs: dict, player_id: int, max_planets: int, max_fleets: int, max_speed: float = 6.0) -> BoardFeatures:
     planet_dim = len(DEFAULT_FEATURE_SCHEMA.planet_features)
     fleet_dim = len(DEFAULT_FEATURE_SCHEMA.fleet_features)
@@ -72,7 +85,7 @@ def build_board_features(obs: dict, player_id: int, max_planets: int, max_fleets
         radius = float(p[PLANET_RADIUS])
         ships = float(p[PLANET_SHIPS])
         production = float(p[PLANET_PRODUCTION])
-        is_mine, is_enemy, is_neutral, rel_owner = planet_relative_owner(owner, player_id)
+        is_mine, is_enemy, is_neutral, rel_owner = _planet_owner_values(owner, player_id)
         my_planet_count += is_mine
         enemy_planet_count += is_enemy
         neutral_planet_count += is_neutral
@@ -85,8 +98,10 @@ def build_board_features(obs: dict, player_id: int, max_planets: int, max_fleets
         orbital_radius = math.hypot(dx, dy)
         phase = math.atan2(dy, dx)
         is_orbiting = 1 if orbital_radius + radius < ROTATION_RADIUS_LIMIT else 0
-        velocity_x = -math.sin(phase) * orbital_radius * angular_velocity * is_orbiting
-        velocity_y = math.cos(phase) * orbital_radius * angular_velocity * is_orbiting
+        phase_sin = math.sin(phase)
+        phase_cos = math.cos(phase)
+        velocity_x = -phase_sin * orbital_radius * angular_velocity * is_orbiting
+        velocity_y = phase_cos * orbital_radius * angular_velocity * is_orbiting
         planet_tokens[i] = (
             rel_owner,
             x / 100.0,
@@ -101,8 +116,8 @@ def build_board_features(obs: dict, player_id: int, max_planets: int, max_fleets
             1 if pid in comet_ids else 0,
             is_orbiting,
             orbital_radius / 100.0,
-            math.sin(phase),
-            math.cos(phase),
+            phase_sin,
+            phase_cos,
             velocity_x / 10.0,
             velocity_y / 10.0,
         )
@@ -120,7 +135,7 @@ def build_board_features(obs: dict, player_id: int, max_planets: int, max_fleets
         angle = float(f[FLEET_ANGLE])
         source_id = int(f[FLEET_SOURCE])
         ships = float(f[FLEET_SHIPS])
-        is_friendly, is_enemy, rel_owner = fleet_relative_owner(owner, player_id)
+        is_friendly, is_enemy, rel_owner = _fleet_owner_values(owner, player_id)
         if is_friendly:
             my_fleet_ships += ships
         else:

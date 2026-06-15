@@ -13,8 +13,10 @@ class ValidationError(RuntimeError):
 
 def _load_split(path: Path) -> dict[str, np.ndarray]:
     arrays = {p.stem: np.load(p, allow_pickle=False) for p in path.glob("*.npy")}
-    masks = np.load(path / "action_masks.npz")
-    arrays.update({k: masks[k] for k in masks.files})
+    mask_fields = ["action_valid_mask", "source_candidate_mask", "target_candidate_mask"]
+    if not all(field in arrays for field in mask_fields):
+        masks = np.load(path / "action_masks.npz")
+        arrays.update({k: masks[k] for k in masks.files})
     return arrays
 
 
@@ -52,4 +54,3 @@ def validate_dataset(dataset: str | Path, unmatched_threshold: float = 0.01, amb
     if ambiguous_rate > ambiguous_threshold:
         raise ValidationError(f"ambiguous match rate {ambiguous_rate:.3f} exceeds {ambiguous_threshold:.3f}")
     return report
-

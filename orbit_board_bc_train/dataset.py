@@ -27,9 +27,14 @@ class BoardBCDataset(Dataset):
             "phase_id": np.load(self.root / "phase_id.npy"),
             "winner_id": np.load(self.root / "winner_id.npy"),
         }
-        masks = np.load(self.root / "action_masks.npz")
-        for key in masks.files:
-            self.arrays[key] = masks[key]
+        mask_fields = ["action_valid_mask", "source_candidate_mask", "target_candidate_mask"]
+        if all((self.root / f"{key}.npy").exists() for key in mask_fields):
+            for key in mask_fields:
+                self.arrays[key] = np.load(self.root / f"{key}.npy")
+        else:
+            masks = np.load(self.root / "action_masks.npz")
+            for key in masks.files:
+                self.arrays[key] = masks[key]
         self.index = pd.read_parquet(self.root / "sample_index.parquet")
 
     def __len__(self) -> int:
@@ -40,4 +45,3 @@ class BoardBCDataset(Dataset):
         item["episode_id"] = self.index.iloc[idx]["episode_id"]
         item["sample_step"] = int(self.index.iloc[idx]["sample_step"])
         return item
-
