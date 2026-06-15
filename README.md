@@ -1,8 +1,10 @@
 # orbit_warsv2
 
-Short project description: `orbit_warsv2` is a training workflow for building an Orbit Wars agent from replay data. The pipeline prepares replay-derived datasets, trains a behavioral cloning policy, and can optionally fine-tune that policy with PPO.
+`orbit_warsv2` is a board-level behavioral cloning workflow for Orbit Wars. It builds datasets from replay JSON files, trains a BC policy, evaluates checkpoints, and exports a runnable Python submission file.
 
-## 1. Environment setup
+## Setup
+
+Linux/macOS:
 
 ```bash
 uv venv --python 3.12
@@ -10,7 +12,7 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
-On Windows PowerShell:
+Windows PowerShell:
 
 ```powershell
 uv venv --python 3.12
@@ -18,23 +20,15 @@ uv venv --python 3.12
 uv pip install -e .
 ```
 
-Arguments:
+Run tests:
 
-| Command part | Meaning |
-| --- | --- |
-| `uv venv --python 3.12` | Creates a local virtual environment with Python 3.12. |
-| `source .venv/bin/activate` / `.venv\Scripts\Activate.ps1` | Activates the virtual environment. |
-| `uv pip install -e .` | Installs this project in editable mode so local code changes are used immediately. |
-
-## 2. Prepare replay files
-
-Put replay JSON files under:
-
-```text
-./replays/
+```bash
+python -m pytest
 ```
 
-Expected layout:
+## Replay input
+
+Put replay JSON files in `./replays/`:
 
 ```text
 replays/
@@ -43,164 +37,173 @@ replays/
   ...
 ```
 
-Optional KaggleHub download pattern:
+## Build dataset
+
+Small smoke-test build:
 
 ```bash
-python - <<'PY'
-import kagglehub
-
-path = kagglehub.dataset_download(
-    "kaggle/orbit-wars-episodes-2026-06-14",
-    path="./replays",
-)
-print("Replay files downloaded to:", path)
-PY
+python -m orbit_board_bc_data.cli build \
+  --replay-dir ./replays \
+  --out-dir ./orbit_dataset_work/board_bc_small \
+  --player-filter winner \
+  --valid-ratio 0.1 \
+  --seed 13 \
+  --max-files 10 \
+  --workers 1
 ```
 
-Arguments:
+Full build:
+
+```bash
+python -m orbit_board_bc_data.cli build \
+  --replay-dir ./replays \
+  --out-dir ./orbit_dataset_work/board_bc \
+  --player-filter winner \
+  --valid-ratio 0.1 \
+  --seed 13 \
+  --max-planets 40 \
+  --max-fleets 256 \
+  --max-actions-per-turn 32 \
+  --workers 8 \
+  --worker-output shard
+```
+
+Append up to 100 new replay files:
+
+```bash
+python -m orbit_board_bc_data.cli build \
+  --replay-dir ./replays \
+  --out-dir ./orbit_dataset_work/board_bc \
+  --append \
+  --max-files 100 \
+  --workers 8 \
+  --worker-output shard
+```
+
+Build arguments:
 
 | Argument | Meaning |
 | --- | --- |
-| `kaggle/orbit-wars-episodes-2026-06-14` | Kaggle dataset slug. Replace it if using another replay dataset. |
-| `path="./replays"` | Local folder where replay files should be stored. |
-
-## 3. Build the dataset
-
-Small CPU/default run:
-
-```bash
-python -m orbit_training_prep.dataset_builder \
-  --replay ./replays \
-  --out-dir ./orbit_dataset_work/combined \
-  --horizon 160 \
-  --max-file 10
-```
-
-CUDA/parallel run:
-
-```bash
-python -m orbit_training_prep.dataset_builder \
-  --replay ./replays \
-  --out-dir ./orbit_dataset_work/combined_cuda \
-  --horizon 160 \
-  --device cuda \
-  --batch-size 256 \
-  --workers 1 \
-  --max-file 100
-```
-
-For full dataset generation, remove `--max-file`.
-
-Arguments:
-
-| Argument | Meaning |
-| --- | --- |
-| `--replay` | Input replay directory. |
+| `--replay-dir` | Directory containing replay `.json` files. |
 | `--out-dir` | Output dataset directory. |
-| `--horizon` | Future-step horizon used when deriving training labels from replay outcomes. |
-| `--device` | Compute device for supported preprocessing paths. Use `cuda` when GPU support is available. |
-| `--batch-size` | Number of replay/source-turn items processed per batch. |
-| `--workers` | Number of worker processes used for preprocessing. |
-| `--max-file` | Maximum number of replay files to process. Use this for smoke tests or limited dataset builds. Remove it for the full dataset. |
+| `--player-filter` | Rows to extract: `winner`, `top2`, or `all`. |
+| `--valid-ratio` | Fraction of episodes used for validation. |
+| `--seed` | Seed for deterministic train/validation split. |
+| `--max-files` | Maximum replay JSON files to process. Omit it for a full build. With `--append`, existing episodes are skipped first, then this limit is applied. |
+| `--max-planets` | Maximum planet tokens per sample. |
+| `--max-fleets` | Maximum fleet tokens per sample. |
+| `--max-actions-per-turn` | Maximum action labels per turn. |
+| `--workers` | Number of replay worker processes. |
+| `--worker-output` | Worker write mode: `shard` or `parent`. |
+| `--append` | Add only new episodes to an existing compatible dataset. |
 
-## 4. Train the BC policy
+## Validate dataset
 
 ```bash
-python -m orbit_bc_training.train_bc_policy \
-  --train_dir ./orbit_dataset_work/combined_split/train \
-  --valid_dir ./orbit_dataset_work/combined_split/valid \
-  --out_dir ./bc_checkpoints/run_001 \
-  --batch_size 512 \
+python -m orbit_board_bc_data.cli validate \
+  --dataset ./orbit_dataset_work/board_bc \
+  --unmatched-threshold 0.01 \
+  --ambiguous-threshold 0.01
+```
+
+Validation arguments:
+
+| Argument | Meaning |
+| --- | --- |
+| `--dataset` | Dataset directory to validate. |
+| `--unmatched-threshold` | Maximum allowed unmatched-label rate. |
+| `--ambiguous-threshold` | Maximum allowed ambiguous-label rate. |
+
+## Feature probe
+
+```bash
+python -m orbit_board_bc_data.cli feature-probe \
+  --dataset ./orbit_dataset_work/board_bc \
+  --out-dir ./orbit_dataset_work/feature_probe
+```
+
+Feature-probe arguments:
+
+| Argument | Meaning |
+| --- | --- |
+| `--dataset` | Dataset directory to inspect. |
+| `--out-dir` | Directory where `feature_probe.json` is written. |
+
+## Train BC policy
+
+```bash
+python -m orbit_board_bc_train.cli train \
+  --dataset ./orbit_dataset_work/board_bc \
+  --out-dir ./bc_runs/board_bc_v1 \
+  --hidden-dim 192 \
+  --encoder-layers 4 \
+  --decoder-layers 2 \
+  --heads 6 \
+  --dropout 0.05 \
+  --batch-size 128 \
   --epochs 20 \
   --lr 3e-4 \
-  --weight_decay 1e-4 \
-  --grad_clip 1.0 \
-  --hidden_size 128 \
-  --num_layers 2 \
-  --num_heads 4 \
-  --mlp_size 256 \
-  --dropout 0.0 \
-  --seed 42 \
-  --device auto \
-  --num_workers 0
+  --weight-decay 1e-4 \
+  --grad-clip 1.0 \
+  --noop-stop-weight 0.35 \
+  --device auto
 ```
 
-Arguments:
+Training arguments:
 
 | Argument | Meaning |
 | --- | --- |
-| `--train_dir` | Training split directory. |
-| `--valid_dir` | Validation split directory. |
-| `--out_dir` | Checkpoint/output directory. |
-| `--batch_size` | Training batch size. |
-| `--epochs` | Number of full passes over the training data. |
+| `--dataset` | Dataset root containing `train/` and `valid/`. |
+| `--out-dir` | Training output directory. |
+| `--hidden-dim` | Model hidden size. |
+| `--encoder-layers` | Number of encoder layers. |
+| `--decoder-layers` | Number of decoder layers. |
+| `--heads` | Number of attention heads. |
+| `--dropout` | Dropout rate. |
+| `--batch-size` | Training batch size. |
+| `--epochs` | Number of training epochs. |
 | `--lr` | Learning rate. |
-| `--weight_decay` | L2 regularization strength. |
-| `--grad_clip` | Maximum gradient norm before clipping. |
-| `--hidden_size` | Transformer/model hidden dimension. |
-| `--num_layers` | Number of model layers. |
-| `--num_heads` | Number of attention heads. |
-| `--mlp_size` | Feed-forward layer size. |
-| `--dropout` | Dropout rate. Use `0.0` for deterministic full-data training. |
-| `--seed` | Random seed for reproducibility. |
-| `--device` | Training device. `auto` selects CUDA when available, otherwise CPU. |
-| `--num_workers` | DataLoader worker count. Use `0` when multiprocessing causes memory or platform issues. |
+| `--weight-decay` | Weight decay. |
+| `--grad-clip` | Gradient clipping norm. |
+| `--noop-stop-weight` | Noop stop loss weight. |
+| `--device` | Training device, usually `auto`. |
 
-Best checkpoint path after training:
-
-```text
-./bc_checkpoints/run_001/best/checkpoint.pt
-```
-
-## 5. Optional PPO fine-tuning
+## Evaluate checkpoint
 
 ```bash
-python -m orbit_ppo_jax.train \
-  --bc_checkpoint ./bc_checkpoints/run_001/best/checkpoint.pt \
-  --out_dir ./ppo_runs/jax_ppo_4p \
-  --players 4 \
-  --envs 80 \
-  --enable_comets \
-  --rollout_steps 32 \
-  --episode_steps 500 \
-  --updates 5 \
-  --pfsp_max_policy_slots 8 \
-  --pfsp_matrix_games 0 \
-  --eval_games 0 \
-  --source_cap 3 \
-  --precision float16 \
-  --no_remat_policy_eval
+python -m orbit_board_bc_train.cli eval \
+  --dataset ./orbit_dataset_work/board_bc \
+  --checkpoint ./bc_runs/board_bc_v1/best/checkpoint.pt \
+  --batch-size 128 \
+  --device auto
 ```
 
-Arguments:
+Evaluation arguments:
 
 | Argument | Meaning |
 | --- | --- |
-| `--bc_checkpoint` | Starting BC checkpoint used to initialize PPO. |
-| `--out_dir` | PPO run output directory. |
-| `--players` | Number of players in the environment. |
-| `--envs` | Number of parallel rollout environments. |
-| `--enable_comets` | Enables comet mechanics in the environment. |
-| `--rollout_steps` | Number of environment steps collected per PPO rollout. |
-| `--episode_steps` | Maximum steps per episode. |
-| `--updates` | Number of PPO update iterations. |
-| `--pfsp_max_policy_slots` | Maximum opponent-policy slots for PFSP. |
-| `--pfsp_matrix_games` | Number of games used to update the PFSP matchup matrix. `0` disables matrix evaluation. |
-| `--eval_games` | Number of evaluation games per run. `0` disables evaluation. |
-| `--source_cap` | Maximum number of source planets/actions considered per decision. |
-| `--precision` | Numeric precision used by the JAX PPO run. |
-| `--no_remat_policy_eval` | Disables rematerialization during policy evaluation to reduce complexity/debug issues. |
+| `--dataset` | Dataset root used for evaluation. |
+| `--checkpoint` | Checkpoint file to evaluate. |
+| `--batch-size` | Evaluation batch size. |
+| `--device` | Evaluation device. |
 
-## Common outputs
+## Export submission file
 
-| Path | Meaning |
+```bash
+python -m orbit_board_bc_train.cli export-agent \
+  --checkpoint ./bc_runs/board_bc_v1/best/checkpoint.pt \
+  --out ./submission/main.py
+```
+
+Export arguments:
+
+| Argument | Meaning |
 | --- | --- |
-| `./orbit_dataset_work/` | Generated datasets and intermediate files. |
-| `./bc_checkpoints/` | Behavioral cloning checkpoints. |
-| `./ppo_runs/` | PPO fine-tuning outputs. |
+| `--checkpoint` | Trained checkpoint to export. |
+| `--out` | Output Python file. |
 
-## Recommended workflow
+## Workflow
 
 ```text
-replays -> dataset_builder -> BC training -> BC checkpoint -> optional PPO fine-tuning
+replays -> build dataset -> validate dataset -> train BC -> evaluate checkpoint -> export submission file
 ```
