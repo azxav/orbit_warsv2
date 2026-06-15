@@ -47,6 +47,8 @@ def main(argv: list[str] | None = None) -> None:
     tr.add_argument("--persistent-workers", action="store_true", default=False)
     tr.add_argument("--prefetch-factor", type=int, default=2)
     tr.add_argument("--shuffle-block-size", type=int, default=65536)
+    tr.add_argument("--seed", type=int, default=0, help="Training shuffle and model initialization seed")
+    tr.add_argument("--checkpoint-interval", type=int, default=100, help="Write last.pt every N completed batches")
     tr.add_argument("--log-file", help="Training log path. Defaults to <out-dir>/train.log")
     tr.add_argument("--log-interval", type=int, default=10, help="Write batch progress every N batches")
     tr.add_argument("--resume", help="Training checkpoint to resume from, usually <out-dir>/last.pt")

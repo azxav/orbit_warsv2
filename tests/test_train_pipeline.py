@@ -107,7 +107,7 @@ def _sample(i: int) -> TurnSample:
     )
 
 
-def _train_args(dataset, out_dir, epochs, resume=None):
+def _train_args(dataset, out_dir, epochs, resume=None, checkpoint_interval=1):
     return Namespace(
         dataset=str(dataset),
         out_dir=str(out_dir),
@@ -127,6 +127,8 @@ def _train_args(dataset, out_dir, epochs, resume=None):
         log_interval=1,
         log_file=None,
         resume=None if resume is None else str(resume),
+        seed=123,
+        checkpoint_interval=checkpoint_interval,
     )
 
 
@@ -147,6 +149,83 @@ def test_train_resumes_from_last_completed_epoch(tmp_path):
     resumed = load_checkpoint(out_dir / "last.pt")
     assert resumed["train_state"]["epoch"] == 3
     assert resumed["train_state"]["start_epoch"] == 2
+
+
+def test_train_resumes_from_last_completed_batch(tmp_path, monkeypatch):
+    from orbit_board_bc_train import train_loop
+    from orbit_board_bc_train.train_loop import train
+
+    dataset = tmp_path / "dataset"
+    write_dataset(dataset, [_sample(i) for i in range(6)], [_sample(100)], {}, {})
+
+    out_dir = tmp_path / "run"
+    real_save_checkpoint = train_loop.save_checkpoint
+    batch_checkpoint_count = 0
+
+    def interrupt_after_second_batch(*args, **kwargs):
+        nonlocal batch_checkpoint_count
+        real_save_checkpoint(*args, **kwargs)
+        train_state = kwargs.get("train_state") if kwargs else None
+        if train_state is None and len(args) >= 6:
+            train_state = args[5]
+        if train_state and not train_state.get("epoch_complete", False):
+            batch_checkpoint_count += 1
+            if batch_checkpoint_count == 2:
+                raise KeyboardInterrupt
+
+    monkeypatch.setattr(train_loop, "save_checkpoint", interrupt_after_second_batch)
+
+    try:
+        train(_train_args(dataset, out_dir, epochs=1))
+    except KeyboardInterrupt:
+        pass
+
+    interrupted = load_checkpoint(out_dir / "last.pt")
+    assert interrupted["train_state"]["epoch"] == 1
+    assert interrupted["train_state"]["completed_batches"] == 2
+    assert interrupted["train_state"]["epoch_complete"] is False
+
+    monkeypatch.setattr(train_loop, "save_checkpoint", real_save_checkpoint)
+    train(_train_args(dataset, out_dir, epochs=1, resume=out_dir / "last.pt"))
+
+    resumed = load_checkpoint(out_dir / "last.pt")
+    assert resumed["train_state"]["epoch"] == 1
+    assert resumed["train_state"]["completed_batches"] == 3
+    assert resumed["train_state"]["epoch_complete"] is True
+    assert resumed["train_state"]["start_epoch"] == 1
+    assert "Resumed training from" in (out_dir / "train.log").read_text(encoding="utf-8")
+    assert "batch 3/3" in (out_dir / "train.log").read_text(encoding="utf-8")
+
+
+def test_train_honors_checkpoint_interval(tmp_path, monkeypatch):
+    from orbit_board_bc_train import train_loop
+    from orbit_board_bc_train.train_loop import train
+
+    dataset = tmp_path / "dataset"
+    write_dataset(dataset, [_sample(i) for i in range(6)], [_sample(100)], {}, {})
+
+    out_dir = tmp_path / "run"
+    real_save_checkpoint = train_loop.save_checkpoint
+    saved_states = []
+
+    def record_checkpoint(*args, **kwargs):
+        train_state = kwargs.get("train_state") if kwargs else None
+        if train_state is None and len(args) >= 6:
+            train_state = args[5]
+        if train_state:
+            saved_states.append(
+                (
+                    train_state["completed_batches"],
+                    train_state["epoch_complete"],
+                )
+            )
+        return real_save_checkpoint(*args, **kwargs)
+
+    monkeypatch.setattr(train_loop, "save_checkpoint", record_checkpoint)
+
+    train(_train_args(dataset, out_dir, epochs=1, checkpoint_interval=2))
+
+    assert saved_states == [(2, False), (3, False), (3, True), (3, True)]
 
 
 def test_train_writes_progress_to_log_file(tmp_path, capsys):
@@ -230,3 +309,12 @@ def test_block_shuffle_sampler_visits_each_index_once():
 
     assert len(indices) == 17
     assert sorted(indices) == list(range(17))
+
+
+def test_block_shuffle_sampler_can_resume_inside_epoch():
+    from orbit_board_bc_train.train_loop import BlockShuffleSampler
+
+    full = list(BlockShuffleSampler(range(17), block_size=5, seed=99, epoch=3))
+    resumed = list(BlockShuffleSampler(range(17), block_size=5, seed=99, epoch=3, start_index=6))
+
+    assert resumed == full[6:]

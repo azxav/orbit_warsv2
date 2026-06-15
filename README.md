@@ -147,6 +147,8 @@ python -m orbit_board_bc_train.cli train \
   --grad-clip 1.0 \
   --noop-stop-weight 0.35 \
   --shuffle-block-size 65536 \
+  --seed 0 \
+  --checkpoint-interval 1 \
   --log-interval 10 \
   --device auto \
   --resume ./bc_runs/board_bc_v1/last.pt
@@ -173,13 +175,15 @@ Training arguments:
 | `--pin-memory` | Pin DataLoader batches before GPU transfer. Disabled by default to avoid extra host-memory pressure. |
 | `--persistent-workers` | Keep DataLoader workers alive between epochs when `--num-workers > 0`. |
 | `--prefetch-factor` | Prefetched batches per worker when `--num-workers > 0`. |
-| `--shuffle-block-size` | Bounded training shuffle block size. Default `65536` caps shuffle-index RAM; set `0` to use PyTorch full-dataset shuffle. |
+| `--shuffle-block-size` | Bounded deterministic training shuffle block size. Default `65536` caps shuffle-index RAM; set `0` to shuffle across the full dataset. |
+| `--seed` | Training shuffle and model initialization seed. Keep the same value when resuming an incomplete epoch. |
+| `--checkpoint-interval` | Write `last.pt` every N completed batches. Default `1`; the final batch of each epoch is always checkpointed. |
 | `--log-file` | Training log path. Defaults to `<out-dir>/train.log`. |
 | `--log-interval` | Write batch progress every N batches. Default `10`; first and last batch of each epoch are always logged. |
 | `--device` | Training device, usually `auto`. |
 | `--resume` | Optional training checkpoint to resume from, usually `last.pt`. `--epochs` remains the target total epoch count, not the number of extra epochs. |
 
-`last.pt` stores the most recent completed epoch plus optimizer state. To continue a run interrupted after epoch 7 and train through epoch 20, rerun the same command with `--epochs 20 --resume ./bc_runs/board_bc_v1/last.pt`.
+`last.pt` is updated every `--checkpoint-interval` completed training batches, always after the final batch in an epoch, and after each epoch evaluation. It stores model weights, optimizer state, RNG state, the current epoch, and the number of completed batches in that epoch. To continue a run interrupted during epoch 7 and train through epoch 20, rerun the same command with `--epochs 20 --resume ./bc_runs/board_bc_v1/last.pt`. If the checkpoint was written mid-epoch, keep `--batch-size`, `--shuffle-block-size`, and `--seed` unchanged so the remaining batch order can be replayed exactly.
 
 ## Evaluate checkpoint
 

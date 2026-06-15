@@ -35,19 +35,39 @@ TRAIN_ARRAY_KEYS = [
 
 
 class BlockShuffleSampler(Sampler[int]):
-    def __init__(self, data_source: Sized, block_size: int = 65536) -> None:
+    def __init__(
+        self,
+        data_source: Sized,
+        block_size: int = 65536,
+        seed: int = 0,
+        epoch: int = 1,
+        start_index: int = 0,
+    ) -> None:
         if block_size < 1:
             raise ValueError("block_size must be greater than 0")
         self.data_source = data_source
         self.block_size = int(block_size)
+        self.seed = int(seed)
+        self.epoch = int(epoch)
+        self.start_index = int(start_index)
+
+    def set_epoch(self, epoch: int, start_index: int = 0) -> None:
+        self.epoch = int(epoch)
+        self.start_index = int(start_index)
 
     def __iter__(self):
         sample_count = len(self.data_source)
         block_count = (sample_count + self.block_size - 1) // self.block_size
-        for block_idx in torch.randperm(block_count).tolist():
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch * 1_000_003)
+        skipped = 0
+        for block_idx in torch.randperm(block_count, generator=generator).tolist():
             start = block_idx * self.block_size
             stop = min(start + self.block_size, sample_count)
-            for offset in torch.randperm(stop - start).tolist():
+            for offset in torch.randperm(stop - start, generator=generator).tolist():
+                if skipped < self.start_index:
+                    skipped += 1
+                    continue
                 yield start + offset
 
     def __len__(self) -> int:
@@ -166,17 +186,85 @@ def _format_metrics(metrics: dict[str, float]) -> str:
     return json.dumps({key: round(float(value), 6) for key, value in metrics.items()}, sort_keys=True)
 
 
+def _capture_rng_state(device: torch.device) -> dict:
+    state = {"torch": torch.get_rng_state()}
+    if device.type == "cuda" and torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(train_state: dict, device: torch.device) -> None:
+    rng_state = train_state.get("rng_state")
+    if not rng_state:
+        return
+    if "torch" in rng_state:
+        torch.set_rng_state(rng_state["torch"].cpu())
+    if device.type == "cuda" and torch.cuda.is_available() and "cuda" in rng_state:
+        torch.cuda.set_rng_state_all([state.cpu() for state in rng_state["cuda"]])
+
+
+def _batch_resume_train_state(
+    *,
+    args,
+    seed: int,
+    epoch: int,
+    start_epoch: int,
+    completed_batches: int,
+    epoch_complete: bool,
+    global_step: int,
+    best: float,
+    best_metrics: dict[str, float],
+    device: torch.device,
+) -> dict:
+    return {
+        "epoch": epoch,
+        "start_epoch": start_epoch,
+        "completed_batches": completed_batches,
+        "epoch_complete": epoch_complete,
+        "global_step": global_step,
+        "batch_size": int(args.batch_size),
+        "shuffle_block_size": int(getattr(args, "shuffle_block_size", 65536) or 0),
+        "seed": seed,
+        "best_eval_loss": best,
+        "best_metrics": best_metrics,
+        "rng_state": _capture_rng_state(device),
+    }
+
+
+def _validate_incomplete_epoch_resume(train_state: dict, args, seed: int) -> None:
+    expected = {
+        "batch_size": int(args.batch_size),
+        "shuffle_block_size": int(getattr(args, "shuffle_block_size", 65536) or 0),
+        "seed": seed,
+    }
+    mismatches = {
+        key: (train_state.get(key), value)
+        for key, value in expected.items()
+        if train_state.get(key) != value
+    }
+    if mismatches:
+        details = ", ".join(f"{key}: checkpoint={old!r} current={new!r}" for key, (old, new) in mismatches.items())
+        raise ValueError(f"Cannot resume incomplete epoch with changed data-order settings ({details})")
+
+
+def _should_save_batch_checkpoint(batch_idx: int, batch_count: int, checkpoint_interval: int) -> bool:
+    return batch_idx == batch_count or batch_idx % checkpoint_interval == 0
+
+
 def train(args) -> dict[str, float]:
     device = resolve_device(args.device)
+    seed = int(getattr(args, "seed", 0) or 0)
+    torch.manual_seed(seed)
     train_ds = BoardBCDataset(args.dataset, "train", include_metadata=False, array_keys=TRAIN_ARRAY_KEYS)
     valid_ds = BoardBCDataset(args.dataset, "valid", include_metadata=False, array_keys=TRAIN_ARRAY_KEYS)
     loader_kwargs = _dataloader_kwargs(args, device)
     shuffle_block_size = int(getattr(args, "shuffle_block_size", 65536) or 0)
-    train_sampler = BlockShuffleSampler(train_ds, shuffle_block_size) if shuffle_block_size > 0 else None
+    effective_block_size = shuffle_block_size if shuffle_block_size > 0 else max(1, len(train_ds))
+    train_sampler = BlockShuffleSampler(train_ds, effective_block_size, seed=seed)
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
-        shuffle=train_sampler is None,
+        shuffle=False,
         sampler=train_sampler,
         collate_fn=collate_samples,
         **loader_kwargs,
@@ -194,8 +282,12 @@ def train(args) -> dict[str, float]:
     best_metrics: dict[str, float] = {}
     config = _checkpoint_config(train_ds, args)
     start_epoch = 1
+    resume_completed_batches = 0
+    global_step = 0
+    latest_metrics: dict[str, float] = {}
     resume_path = getattr(args, "resume", None)
     log_interval = max(1, int(getattr(args, "log_interval", 10) or 1))
+    checkpoint_interval = max(1, int(getattr(args, "checkpoint_interval", 1) or 1))
     with _TrainingLogger(_resolve_log_file(args)) as logger:
         logger.info(
             "Starting training "
@@ -211,10 +303,22 @@ def train(args) -> dict[str, float]:
                 raise ValueError("Resume checkpoint does not contain optimizer_state; use a training checkpoint saved with resume support")
             opt.load_state_dict(ckpt["optimizer_state"])
             train_state = ckpt.get("train_state", {})
-            start_epoch = int(train_state.get("epoch", 0)) + 1
+            ckpt_epoch = int(train_state.get("epoch", 0))
+            completed_batches = int(train_state.get("completed_batches", 0) or 0)
+            epoch_complete = bool(train_state.get("epoch_complete", True))
+            if not epoch_complete:
+                _validate_incomplete_epoch_resume(train_state, args, seed)
+            start_epoch = ckpt_epoch + 1 if epoch_complete else ckpt_epoch
+            resume_completed_batches = 0 if epoch_complete else completed_batches
+            global_step = int(train_state.get("global_step", 0) or 0)
+            latest_metrics = dict(ckpt.get("metrics", {}))
             best = float(train_state.get("best_eval_loss", ckpt.get("metrics", {}).get("eval_loss", best)))
             best_metrics = dict(train_state.get("best_metrics", ckpt.get("metrics", {})))
-            logger.info(f"Resumed training from {resume_path} at epoch {start_epoch}/{args.epochs}")
+            _restore_rng_state(train_state, device)
+            logger.info(
+                f"Resumed training from {resume_path} at epoch {start_epoch}/{args.epochs} "
+                f"after {resume_completed_batches} completed batches"
+            )
             if start_epoch > args.epochs:
                 logger.info(f"Training already complete at epoch {start_epoch - 1}/{args.epochs}")
                 return best_metrics
@@ -222,9 +326,12 @@ def train(args) -> dict[str, float]:
             model.train()
             epoch_start = time.perf_counter()
             batch_count = len(train_loader)
+            start_batch = resume_completed_batches if epoch == start_epoch else 0
+            train_sampler.set_epoch(epoch, start_index=start_batch * args.batch_size)
             running_loss = 0.0
             running_samples = 0
-            for batch_idx, batch in enumerate(train_loader, start=1):
+            for batch_offset, batch in enumerate(train_loader, start=1):
+                batch_idx = start_batch + batch_offset
                 tensor_batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
                 opt.zero_grad(set_to_none=True)
                 outputs = model(tensor_batch)
@@ -232,16 +339,39 @@ def train(args) -> dict[str, float]:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 opt.step()
+                global_step += 1
                 batch_samples = int(tensor_batch["planet_tokens"].shape[0])
                 running_loss += float(loss.detach().cpu()) * batch_samples
                 running_samples += batch_samples
+                if _should_save_batch_checkpoint(batch_idx, batch_count, checkpoint_interval):
+                    save_checkpoint(
+                        Path(args.out_dir) / "last.pt",
+                        model,
+                        config,
+                        latest_metrics,
+                        opt,
+                        _batch_resume_train_state(
+                            args=args,
+                            seed=seed,
+                            epoch=epoch,
+                            start_epoch=start_epoch,
+                            completed_batches=batch_idx,
+                            epoch_complete=False,
+                            global_step=global_step,
+                            best=best,
+                            best_metrics=best_metrics,
+                            device=device,
+                        ),
+                    )
                 if batch_idx == 1 or batch_idx == batch_count or batch_idx % log_interval == 0:
                     avg_loss = running_loss / max(1, running_samples)
                     logger.info(
                         f"Epoch {epoch}/{args.epochs} batch {batch_idx}/{batch_count} "
                         f"train_loss={avg_loss:.6f}"
                     )
+            resume_completed_batches = 0
             metrics = evaluate_model(model, valid_loader, device)
+            latest_metrics = metrics
             if metrics["eval_loss"] < best:
                 best = metrics["eval_loss"]
                 best_metrics = metrics
@@ -251,12 +381,18 @@ def train(args) -> dict[str, float]:
                     config,
                     metrics,
                     opt,
-                    {
-                        "epoch": epoch,
-                        "start_epoch": start_epoch,
-                        "best_eval_loss": best,
-                        "best_metrics": best_metrics,
-                    },
+                    _batch_resume_train_state(
+                        args=args,
+                        seed=seed,
+                        epoch=epoch,
+                        start_epoch=start_epoch,
+                        completed_batches=batch_count,
+                        epoch_complete=True,
+                        global_step=global_step,
+                        best=best,
+                        best_metrics=best_metrics,
+                        device=device,
+                    ),
                 )
             save_checkpoint(
                 Path(args.out_dir) / "last.pt",
@@ -264,12 +400,18 @@ def train(args) -> dict[str, float]:
                 config,
                 metrics,
                 opt,
-                {
-                    "epoch": epoch,
-                    "start_epoch": start_epoch,
-                    "best_eval_loss": best,
-                    "best_metrics": best_metrics,
-                },
+                _batch_resume_train_state(
+                    args=args,
+                    seed=seed,
+                    epoch=epoch,
+                    start_epoch=start_epoch,
+                    completed_batches=batch_count,
+                    epoch_complete=True,
+                    global_step=global_step,
+                    best=best,
+                    best_metrics=best_metrics,
+                    device=device,
+                ),
             )
             logger.info(
                 f"Epoch {epoch}/{args.epochs} metrics {_format_metrics(metrics)} "
