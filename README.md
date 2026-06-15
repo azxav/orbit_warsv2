@@ -66,13 +66,14 @@ Arguments:
 
 ## 3. Build the dataset
 
-CPU/default run:
+Small CPU/default run:
 
 ```bash
 python -m orbit_training_prep.dataset_builder \
   --replay ./replays \
   --out-dir ./orbit_dataset_work/combined \
-  --horizon 160
+  --horizon 160 \
+  --max-file 10
 ```
 
 CUDA/parallel run:
@@ -84,8 +85,11 @@ python -m orbit_training_prep.dataset_builder \
   --horizon 160 \
   --device cuda \
   --batch-size 256 \
-  --workers 1
+  --workers 1 \
+  --max-file 100
 ```
+
+For full dataset generation, remove `--max-file`.
 
 Arguments:
 
@@ -97,6 +101,7 @@ Arguments:
 | `--device` | Compute device for supported preprocessing paths. Use `cuda` when GPU support is available. |
 | `--batch-size` | Number of replay/source-turn items processed per batch. |
 | `--workers` | Number of worker processes used for preprocessing. |
+| `--max-file` | Maximum number of replay files to process. Use this for smoke tests or limited dataset builds. Remove it for the full dataset. |
 
 ## 4. Train the BC policy
 
