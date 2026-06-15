@@ -145,6 +145,48 @@ def test_replay_loader_falls_back_to_stdlib_json(tmp_path, monkeypatch):
     assert replay.rewards == [1, -1]
 
 
+def test_replay_loader_preserves_null_top_level_rewards(tmp_path):
+    from orbit_board_bc_data.replay_loader import find_winner_id, load_replay
+
+    replay_path = tmp_path / "episode-null-rewards-replay.json"
+    replay_path.write_text(
+        json.dumps(
+            {
+                "id": "episode-null-rewards",
+                "configuration": {},
+                "rewards": [None, None, None, None],
+                "statuses": ["DONE", "DONE", "DONE", "DONE"],
+                "steps": [
+                    [
+                        {"observation": {"player": p, "planets": [], "fleets": []}, "action": [], "reward": None}
+                        for p in range(4)
+                    ],
+                    [
+                        {"observation": {"player": p, "planets": [], "fleets": []}, "action": [], "reward": reward}
+                        for p, reward in enumerate([-1, -1, 1, -1])
+                    ],
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    replay = load_replay(replay_path)
+
+    assert replay.rewards == [None, None, None, None]
+    with pytest.raises(ValueError, match="non-numeric rewards"):
+        find_winner_id(replay)
+
+
+def test_find_winner_id_rejects_non_numeric_rewards():
+    from orbit_board_bc_data.replay_loader import Replay, find_winner_id
+
+    replay = Replay("episode-bad", {}, [None, None], [], [])
+
+    with pytest.raises(ValueError, match="non-numeric rewards"):
+        find_winner_id(replay)
+
+
 def test_perspective_normalizes_raw_player_ids():
     from orbit_board_bc_data.perspective import fleet_relative_owner, planet_relative_owner
 
@@ -842,6 +884,87 @@ def test_cli_build_tracks_quality_counts_without_debug_csvs(tmp_path):
     assert info["stats"]["matched_actions"] == 1
     assert info["stats"]["unmatched_actions"] == 0
     assert info["stats"]["ambiguous_matches"] == 0
+
+
+def test_cli_build_discards_invalid_reward_replays_and_tracks_metadata(tmp_path):
+    from orbit_board_bc_data.cli import main
+
+    replay_dir = tmp_path / "replays"
+    replay_dir.mkdir()
+    _write_noop_replay(replay_dir / "valid.json", "valid")
+    invalid_replay = replay_dir / "invalid.json"
+    invalid_replay.write_text(
+        json.dumps(
+            {
+                "id": "invalid",
+                "configuration": {"episodeSteps": 2, "shipSpeed": 6.0},
+                "rewards": [None, None, None, None],
+                "statuses": ["DONE", "DONE", "DONE", "DONE"],
+                "steps": [
+                    [
+                        {
+                            "observation": {
+                                "player": player_id,
+                                "step": 0,
+                                "planets": [_planet(1, 0, 10.0, 10.0)],
+                                "fleets": [],
+                            },
+                            "action": [],
+                            "reward": None,
+                            "status": "ACTIVE",
+                        }
+                        for player_id in range(4)
+                    ],
+                    [
+                        {
+                            "observation": {
+                                "player": player_id,
+                                "step": 1,
+                                "planets": [_planet(1, 0, 10.0, 10.0)],
+                                "fleets": [],
+                            },
+                            "action": [],
+                            "reward": reward,
+                            "status": "DONE",
+                        }
+                        for player_id, reward in enumerate([1, -1, -1, -1])
+                    ],
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "dataset"
+    main(
+        [
+            "build",
+            "--replay-dir",
+            str(replay_dir),
+            "--out-dir",
+            str(out_dir),
+            "--keep-noop",
+            "--valid-ratio",
+            "0.0",
+            "--max-planets",
+            "4",
+            "--max-fleets",
+            "2",
+            "--max-actions-per-turn",
+            "3",
+            "--workers",
+            "2",
+            "--write-debug",
+        ]
+    )
+
+    info = json.loads((out_dir / "dataset_info.json").read_text(encoding="utf-8"))
+    skipped = (out_dir / "debug" / "skipped_invalid_replays.csv").read_text(encoding="utf-8")
+
+    assert info["stats"]["train_samples"] == 1
+    assert info["stats"]["skipped_invalid_replays"] == 1
+    assert "invalid" in skipped
+    assert "non-numeric rewards" in skipped
 
 
 def test_cli_build_append_adds_only_new_replays_and_keeps_existing_splits(tmp_path):

@@ -409,6 +409,7 @@ def finalize_incremental_dataset_from_chunks(
         "unmatched_actions": int(old_stats.get("unmatched_actions", 0)) + int(counts.get("unmatched_actions", 0)),
         "ambiguous_matches": int(old_stats.get("ambiguous_matches", 0)) + int(counts.get("ambiguous_matches", 0)),
         "unknown_target_labels": int(old_stats.get("unknown_target_labels", 0)) + int(counts.get("unknown_target_labels", 0)),
+        "skipped_invalid_replays": int(old_stats.get("skipped_invalid_replays", 0)) + int(counts.get("skipped_invalid_replays", 0)),
         "matched_actions": int(old_stats.get("matched_actions", 0)) + int(counts.get("extracted_action_target_labels", 0)),
     }
     (root / "dataset_info.json").write_text(json.dumps({"args": args, "stats": stats}, indent=2), encoding="utf-8")
@@ -458,6 +459,7 @@ def finalize_dataset_from_chunks(
         "unmatched_actions": int(counts.get("unmatched_actions", 0)),
         "ambiguous_matches": int(counts.get("ambiguous_matches", 0)),
         "unknown_target_labels": int(counts.get("unknown_target_labels", 0)),
+        "skipped_invalid_replays": int(counts.get("skipped_invalid_replays", 0)),
         "matched_actions": int(counts.get("extracted_action_target_labels", 0)),
     }
     (root / "dataset_info.json").write_text(json.dumps({"args": args, "stats": stats}, indent=2), encoding="utf-8")
@@ -651,6 +653,7 @@ class StreamingDatasetWriter:
             "unmatched_actions": int(counts.get("unmatched_actions", 0)),
             "ambiguous_matches": int(counts.get("ambiguous_matches", 0)),
             "unknown_target_labels": int(counts.get("unknown_target_labels", 0)),
+            "skipped_invalid_replays": int(counts.get("skipped_invalid_replays", 0)),
             "matched_actions": int(counts.get("extracted_action_target_labels", 0)),
         }
         (self.root / "dataset_info.json").write_text(json.dumps({"args": args, "stats": stats}, indent=2), encoding="utf-8")
@@ -681,6 +684,7 @@ def write_dataset(
         "unmatched_actions": len(debug.get("unmatched_actions", [])),
         "ambiguous_matches": len(debug.get("ambiguous_matches", [])),
         "unknown_target_labels": len(debug.get("unknown_target_labels", [])),
+        "skipped_invalid_replays": len(debug.get("skipped_invalid_replays", [])),
         "matched_actions": len(debug.get("extracted_action_target_labels", [])),
     }
     (root / "dataset_info.json").write_text(json.dumps({"args": args, "stats": stats}, indent=2), encoding="utf-8")

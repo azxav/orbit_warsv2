@@ -31,6 +31,7 @@ DEBUG_KEYS = [
     "ambiguous_matches",
     "unknown_target_labels",
     "skipped_loser_turns",
+    "skipped_invalid_replays",
     "extracted_action_target_labels",
 ]
 
@@ -64,18 +65,36 @@ class ReplayBuildResult:
 def _build_replay_path(job: ReplayBuildJob) -> ReplayBuildResult:
     path = Path(job.path)
     replay = load_replay(path)
-    samples, replay_debug = build_samples_from_replay(
-        replay,
-        job.player_filter,
-        job.max_planets,
-        job.max_fleets,
-        job.max_actions,
-        job.noop_stop_weight,
-        job.keep_noop,
-        job.target_hit_only,
-    )
-    debug_counts = {key: len(replay_debug.get(key, [])) for key in DEBUG_KEYS}
     result_id = job.result_id or path.stem
+    try:
+        samples, replay_debug = build_samples_from_replay(
+            replay,
+            job.player_filter,
+            job.max_planets,
+            job.max_fleets,
+            job.max_actions,
+            job.noop_stop_weight,
+            job.keep_noop,
+            job.target_hit_only,
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        if "rewards" not in reason:
+            raise
+        replay_debug = {
+            key: []
+            for key in DEBUG_KEYS
+        }
+        replay_debug["skipped_invalid_replays"].append(
+            {
+                "episode_id": replay.episode_id,
+                "replay_path": str(path),
+                "reason": reason,
+            }
+        )
+        debug_counts = {key: len(replay_debug.get(key, [])) for key in DEBUG_KEYS}
+        return ReplayBuildResult(result_id, [], replay_debug if job.collect_debug else {}, debug_counts, None, 0)
+    debug_counts = {key: len(replay_debug.get(key, [])) for key in DEBUG_KEYS}
     if job.chunk_dir is not None:
         if not samples:
             return ReplayBuildResult(result_id, [], replay_debug if job.collect_debug else {}, debug_counts, None, 0)
