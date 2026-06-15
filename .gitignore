@@ -7,3 +7,6 @@ board_bc_dataset/
 board_bc_checkpoints/
 feature_probe_report/
 submission/__pycache__/
+orbit_dataset
+replay_dataset
+
