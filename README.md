@@ -146,7 +146,8 @@ python -m orbit_board_bc_train.cli train \
   --weight-decay 1e-4 \
   --grad-clip 1.0 \
   --noop-stop-weight 0.35 \
-  --device auto
+  --device auto \
+  --resume ./bc_runs/board_bc_v1/last.pt
 ```
 
 Training arguments:
@@ -167,6 +168,9 @@ Training arguments:
 | `--grad-clip` | Gradient clipping norm. |
 | `--noop-stop-weight` | Noop stop loss weight. |
 | `--device` | Training device, usually `auto`. |
+| `--resume` | Optional training checkpoint to resume from, usually `last.pt`. `--epochs` remains the target total epoch count, not the number of extra epochs. |
+
+`last.pt` stores the most recent completed epoch plus optimizer state. To continue a run interrupted after epoch 7 and train through epoch 20, rerun the same command with `--epochs 20 --resume ./bc_runs/board_bc_v1/last.pt`.
 
 ## Evaluate checkpoint
 

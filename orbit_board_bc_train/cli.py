@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> None:
     tr.add_argument("--grad-clip", type=float, default=1.0)
     tr.add_argument("--noop-stop-weight", type=float, default=0.35)
     tr.add_argument("--device", default="auto")
+    tr.add_argument("--resume", help="Training checkpoint to resume from, usually <out-dir>/last.pt")
     tr.set_defaults(func=_cmd_train)
 
     ev = sub.add_parser("eval")
@@ -62,4 +63,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-
