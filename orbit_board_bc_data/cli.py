@@ -105,6 +105,14 @@ def _default_workers() -> int:
     return max(1, min(cpu_count - 1, 8))
 
 
+def _limit_replay_paths(replay_paths: list[Path], max_files: int | None) -> list[Path]:
+    if max_files is None:
+        return replay_paths
+    if max_files < 1:
+        raise SystemExit("--max-files must be greater than 0")
+    return replay_paths[:max_files]
+
+
 def _is_existing_dataset(path: str | Path) -> bool:
     root = Path(path)
     return (root / "dataset_info.json").exists() and (root / "train" / "sample_index.parquet").exists()
@@ -168,7 +176,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
         if not new_paths:
             print("No new replay episodes found; dataset unchanged.")
             return
-        replay_paths = new_paths
+        replay_paths = _limit_replay_paths(new_paths, args.max_files)
         train_ids = set()
         valid_ids = set()
         for path in replay_paths:
@@ -181,6 +189,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
         if build_out_dir.exists():
             shutil.rmtree(build_out_dir)
     else:
+        replay_paths = _limit_replay_paths(replay_paths, args.max_files)
         train_ids, valid_ids = split_episode_ids([path.stem for path in replay_paths], args.valid_ratio, args.seed)
     workers = max(1, min(int(args.workers), len(replay_paths)))
     use_worker_shards = args.worker_output == "shard" and workers > 1
@@ -299,6 +308,7 @@ def main(argv: list[str] | None = None) -> None:
     build.add_argument("--player-filter", choices=["winner", "top2", "all"], default="winner")
     build.add_argument("--valid-ratio", type=float, default=0.1)
     build.add_argument("--seed", type=int, default=13)
+    build.add_argument("--max-files", type=int, default=None, help="Maximum number of replay JSON files to process during this build.")
     build.add_argument("--max-planets", type=int, default=40)
     build.add_argument("--max-fleets", type=int, default=256)
     build.add_argument("--max-actions-per-turn", type=int, default=32)
