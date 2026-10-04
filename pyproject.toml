@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "orbit-wars-board-bc"
 version = "0.1.0"
@@ -7,8 +11,25 @@ dependencies = [
   "numpy",
   "orjson",
   "pandas",
-  "pyarrow"
+  "pyarrow",
+  "torch"
 ]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+eval = ["kaggle-environments>=1.28.0"]
+
+[tool.setuptools.packages.find]
+include = ["orbit_board_bc_data*", "orbit_board_bc_train*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+extend-exclude = ["submission/main.py"]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = ["E501"]
