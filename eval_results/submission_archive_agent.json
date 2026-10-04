@@ -1,0 +1,482 @@
+{
+  "environment": "kaggle_environments.orbit_wars",
+  "source_note": "Agent file is the ./main.py member of submission.tar.gz (96,489,414 bytes) extracted before that archive was removed from the working tree. agent_path is the extraction path on the eval machine, not a file in git. submission/main.py in the repository is a different, smaller export.",
+  "agent_path": "/tmp/ow_sub/main.py",
+  "agent_sha256": "466d1fee40e2e8dfe16ea0b0fd9b67cf38c91c70342d18fd8159f5e028df9911",
+  "agent_bytes": 96489414,
+  "baseline_path": "/workspace/competitiondata/main.py",
+  "baseline_description": "Nearest-planet sniper from competitiondata/main.py",
+  "episode_steps": null,
+  "seed_start": 1000,
+  "seat_rotation": "seat = game_index % players",
+  "win_definition": "unique highest environment reward",
+  "rank_definition": "1 + number of players with a strictly higher reward",
+  "agent": {
+    "model_loaded": true,
+    "load_error": null,
+    "config": {
+      "hidden_dim": 384,
+      "encoder_layers": 6,
+      "decoder_layers": 3,
+      "heads": 8,
+      "dropout": 0.05,
+      "planet_dim": 17,
+      "fleet_dim": 11,
+      "global_dim": 13,
+      "max_actions": 32,
+      "max_planets": 40
+    },
+    "parameter_count": 18074882
+  },
+  "runtime": {
+    "python": "3.12.3",
+    "platform": "Linux-6.12.94+-x86_64-with-glibc2.39",
+    "torch": "2.14.1+cpu"
+  },
+  "matchups": {
+    "two_player_vs_random": {
+      "summary": {
+        "games": 8,
+        "wins": 8,
+        "draws": 0,
+        "losses": 0,
+        "win_rate": 1.0,
+        "draw_rate": 0.0,
+        "loss_rate": 0.0,
+        "average_rank": 1.0,
+        "average_reward": 1.0,
+        "average_steps": 295.625
+      },
+      "games": [
+        {
+          "opponent": "random",
+          "players": 2,
+          "seed": 1000,
+          "seat": 0,
+          "rewards": [
+            1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 416,
+          "elapsed_sec": 30.463,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "random",
+          "players": 2,
+          "seed": 1001,
+          "seat": 1,
+          "rewards": [
+            -1.0,
+            1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 83,
+          "elapsed_sec": 3.472,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "random",
+          "players": 2,
+          "seed": 1002,
+          "seat": 0,
+          "rewards": [
+            1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 247,
+          "elapsed_sec": 12.906,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "random",
+          "players": 2,
+          "seed": 1003,
+          "seat": 1,
+          "rewards": [
+            -1.0,
+            1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 57,
+          "elapsed_sec": 2.009,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "random",
+          "players": 2,
+          "seed": 1004,
+          "seat": 0,
+          "rewards": [
+            1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 421,
+          "elapsed_sec": 22.261,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "random",
+          "players": 2,
+          "seed": 1005,
+          "seat": 1,
+          "rewards": [
+            -1.0,
+            1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 500,
+          "elapsed_sec": 17.784,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "random",
+          "players": 2,
+          "seed": 1006,
+          "seat": 0,
+          "rewards": [
+            1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 141,
+          "elapsed_sec": 7.469,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "random",
+          "players": 2,
+          "seed": 1007,
+          "seat": 1,
+          "rewards": [
+            -1.0,
+            1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 500,
+          "elapsed_sec": 15.128,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        }
+      ]
+    },
+    "two_player_vs_baseline": {
+      "summary": {
+        "games": 8,
+        "wins": 8,
+        "draws": 0,
+        "losses": 0,
+        "win_rate": 1.0,
+        "draw_rate": 0.0,
+        "loss_rate": 0.0,
+        "average_rank": 1.0,
+        "average_reward": 1.0,
+        "average_steps": 226.625
+      },
+      "games": [
+        {
+          "opponent": "baseline",
+          "players": 2,
+          "seed": 1001000,
+          "seat": 0,
+          "rewards": [
+            1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 386,
+          "elapsed_sec": 17.027,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "baseline",
+          "players": 2,
+          "seed": 1001001,
+          "seat": 1,
+          "rewards": [
+            -1.0,
+            1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 72,
+          "elapsed_sec": 2.721,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "baseline",
+          "players": 2,
+          "seed": 1001002,
+          "seat": 0,
+          "rewards": [
+            1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 500,
+          "elapsed_sec": 24.242,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "baseline",
+          "players": 2,
+          "seed": 1001003,
+          "seat": 1,
+          "rewards": [
+            -1.0,
+            1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 296,
+          "elapsed_sec": 12.02,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "baseline",
+          "players": 2,
+          "seed": 1001004,
+          "seat": 0,
+          "rewards": [
+            1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 164,
+          "elapsed_sec": 13.967,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "baseline",
+          "players": 2,
+          "seed": 1001005,
+          "seat": 1,
+          "rewards": [
+            -1.0,
+            1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 143,
+          "elapsed_sec": 6.04,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "baseline",
+          "players": 2,
+          "seed": 1001006,
+          "seat": 0,
+          "rewards": [
+            1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 113,
+          "elapsed_sec": 4.149,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "baseline",
+          "players": 2,
+          "seed": 1001007,
+          "seat": 1,
+          "rewards": [
+            -1.0,
+            1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE"
+          ],
+          "steps": 139,
+          "elapsed_sec": 4.342,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        }
+      ]
+    },
+    "four_player_vs_random": {
+      "summary": {
+        "games": 4,
+        "wins": 4,
+        "draws": 0,
+        "losses": 0,
+        "win_rate": 1.0,
+        "draw_rate": 0.0,
+        "loss_rate": 0.0,
+        "average_rank": 1.0,
+        "average_reward": 1.0,
+        "average_steps": 281.75
+      },
+      "games": [
+        {
+          "opponent": "random",
+          "players": 4,
+          "seed": 2001000,
+          "seat": 0,
+          "rewards": [
+            1.0,
+            -1.0,
+            -1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE",
+            "DONE",
+            "DONE"
+          ],
+          "steps": 354,
+          "elapsed_sec": 22.691,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "random",
+          "players": 4,
+          "seed": 2001001,
+          "seat": 1,
+          "rewards": [
+            -1.0,
+            1.0,
+            -1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE",
+            "DONE",
+            "DONE"
+          ],
+          "steps": 269,
+          "elapsed_sec": 25.216,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "random",
+          "players": 4,
+          "seed": 2001002,
+          "seat": 2,
+          "rewards": [
+            -1.0,
+            -1.0,
+            1.0,
+            -1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE",
+            "DONE",
+            "DONE"
+          ],
+          "steps": 385,
+          "elapsed_sec": 13.543,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        },
+        {
+          "opponent": "random",
+          "players": 4,
+          "seed": 2001003,
+          "seat": 3,
+          "rewards": [
+            -1.0,
+            -1.0,
+            -1.0,
+            1.0
+          ],
+          "statuses": [
+            "DONE",
+            "DONE",
+            "DONE",
+            "DONE"
+          ],
+          "steps": 119,
+          "elapsed_sec": 7.999,
+          "outcome": "win",
+          "rank": 1,
+          "error": null
+        }
+      ]
+    }
+  }
+}

@@ -61,7 +61,6 @@ def _fleet_owner_values(owner: int, player_id: int) -> tuple[int, int, float]:
 def build_board_features(obs: dict, player_id: int, max_planets: int, max_fleets: int, max_speed: float = 6.0) -> BoardFeatures:
     planet_dim = len(DEFAULT_FEATURE_SCHEMA.planet_features)
     fleet_dim = len(DEFAULT_FEATURE_SCHEMA.fleet_features)
-    global_dim = len(DEFAULT_FEATURE_SCHEMA.global_features)
     planet_tokens = np.zeros((max_planets, planet_dim), dtype=np.float32)
     fleet_tokens = np.zeros((max_fleets, fleet_dim), dtype=np.float32)
     planet_mask = np.zeros((max_planets,), dtype=bool)

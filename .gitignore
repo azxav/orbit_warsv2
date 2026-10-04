@@ -1,4 +1,5 @@
 replays
+replays5/
 __pycache__/
 .pytest_cache/
 .venv/
@@ -8,5 +9,10 @@ board_bc_checkpoints/
 feature_probe_report/
 submission/__pycache__/
 orbit_dataset
+orbit_dataset_work/
 replay_dataset
+bc_runs/
+*.pt
+*.tar.gz
+submission.tar.gz
 
